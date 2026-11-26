@@ -204,6 +204,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space
 	<div class="wrap">
 		<a class="logo" href="#top">RADIO SILENCE</a>
 		<div class="links">
+			<a href="#new">What's new</a>
 			<a href="#how">How it plays</a>
 			<a href="#features">Features</a>
 			<a href="#screens">Screenshots</a>
@@ -221,7 +222,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space
 			<span style="background: var(--blue)"></span><span style="background: var(--orange)"></span>
 			<span style="background: var(--green)"></span><span style="background: var(--violet)"></span>
 		</div>
-		<p class="lead">Four teams. Four bunkers. Steal the enemy's keys, crack their puzzle rooms, rob the vault - and get the loot home alive.</p>
+		<p class="lead">Four teams. Four bunkers. Steal the enemy's keys, crack their puzzle rooms, rob the vault - and get the loot home alive. Or play Capture the Flag and Team Deathmatch, in rain, fog, snow or the dead of night.</p>
 		<div class="actions">
 			<a class="btn" id="hero-dl" href="#download">
 				<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M11 3h2v10.2l3.6-3.6 1.4 1.4-6 6-6-6 1.4-1.4 3.6 3.6z M4 19h16v2H4z"/></svg>
@@ -229,17 +230,45 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space
 			</a>
 			<a class="btn ghost" href="#screens">See it in action</a>
 		</div>
-		<div class="meta">Version 1.0 &middot; Solo, split-screen co-op &amp; LAN up to 16 players &middot; No install needed</div>
+		<div class="meta">Version 1.1 &middot; Solo, split-screen co-op &amp; LAN up to 16 players &middot; No install needed</div>
 	</div>
 </header>
+
+<section class="alt" id="new">
+<div class="wrap">
+<h2><small>VERSION 1.1</small>What's new</h2>
+<div class="two">
+<div class="panel">
+<h3>Gameplay</h3>
+<ul>
+<li>Game modes: Heist, Capture the Flag, Team Deathmatch - 2 or 4 teams.</li>
+<li>Weather and time of day: rain, storms, fog, snow, dust storms, dusk and night with headlights.</li>
+<li>Puzzles reworked: easier, no memorising, 3 new skill terminals, fully random per bunker.</li>
+<li>Heist keys are shared - any teammate can open a door, and the HUD shows who carries which key.</li>
+<li>5 new weapons incl. rocket launcher; medkits heal teammates; mortar barrages.</li>
+</ul>
+</div>
+<div class="panel">
+<h3>Interface</h3>
+<ul>
+<li>Teammate name tags and health bars.</li>
+<li>Smaller game log with your name in bold; UI scale and log size options.</li>
+<li>Menus scale to any screen - 720p to 4K.</li>
+<li>Change your name in the LAN lobby.</li>
+<li>Soldiers visibly crouch and jump.</li>
+</ul>
+</div>
+</div>
+</div>
+</section>
 
 <section id="how">
 	<div class="wrap">
 		<h2><small>THE MISSION</small>How a match plays</h2>
 		<p class="sub">Every team owns a bunker - and carries the keys to it. Your job is to take theirs while keeping yours.</p>
 		<div class="steps">
-			<div class="step"><b>01</b><h3>Steal the keys</h3><p>Every enemy soldier carries a key to their own bunker. Take them down and grab what they drop.</p></div>
-			<div class="step"><b>02</b><h3>Crack the rooms</h3><p>Each key opens a puzzle room. Code locks, safe dials, signal tuners, memory grids, pressure valves - while your squad holds the door.</p></div>
+			<div class="step"><b>01</b><h3>Steal the keys</h3><p>Every enemy soldier carries a key to their own bunker. Take them down and grab what they drop - stolen keys are shared, so any teammate can open the door.</p></div>
+			<div class="step"><b>02</b><h3>Crack the rooms</h3><p>Each key opens a puzzle room with a random terminal: code locks, safe dials, signal tuners, pressure valves, timing locks, steady-hand and pump challenges - while your squad holds the door.</p></div>
 			<div class="step"><b>03</b><h3>Rob the vault</h3><p>Solve every room and the vault opens. Grab gold, jewels and the golden idol.</p></div>
 			<div class="step"><b>04</b><h3>Bank the loot</h3><p>Carry it back to your camp or vehicle to score. Owners who hold their bunker for a minute lock it again.</p></div>
 		</div>
@@ -249,20 +278,23 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space
 <section class="alt" id="features">
 	<div class="wrap">
 		<h2><small>WHAT'S INSIDE</small>Features</h2>
-		<p class="sub">An old-school raycaster engine pushed into a full FPS: real heights, rooftops, vehicles and chaos.</p>
+		<p class="sub">An old-school raycaster engine pushed into a full FPS: real heights, rooftops, vehicles, weather and chaos.</p>
 		<div class="features">
+		<div class="feature"><img src="img/ctf.jpg" alt="Capture the Flag" loading="lazy"><div><h3>3 game modes</h3><p>Heist (keys, puzzles, vaults), Capture the Flag and Team Deathmatch - with 4 teams or a straight 2-team fight.</p></div></div>
+		<div class="feature"><img src="img/night.jpg" alt="Night battle with headlights" loading="lazy"><div><h3>Weather &amp; time of day</h3><p>Clear, cloudy, rain, thunderstorms, fog, snow and dust storms - from morning to pitch-black night with headlights, lamps and muzzle flashes.</p></div></div>
+		<div class="feature"><img src="img/puzzle.jpg" alt="Steady hand puzzle terminal" loading="lazy"><div><h3>7 puzzle terminals</h3><p>Quick hands, not memory: timing locks, steady-hand tracking, pressure pumps, safe dials and more - every bunker rolls a fresh mix.</p></div></div>
 			<div class="feature"><img src="img/vehicles.jpg" alt="3D vehicles in team colours" loading="lazy"><div><h3>5 combat vehicles</h3><p>Tank, Broneviks armoured car, motorcycle with sidecar MG, jeep and rocket truck. Driver and gunner seats, real 3D models, turrets that follow your aim.</p></div></div>
 			<div class="feature"><img src="img/mortar.jpg" alt="Top-down mortar view" loading="lazy"><div><h3>Base mortars</h3><p>Man your camp's mortar and shell the battlefield from a top-down tactical view - a quarter of the map in range.</p></div></div>
 			<div class="feature"><img src="img/airstrike.jpg" alt="Air strike event with bombers" loading="lazy"><div><h3>Random events</h3><p>Map-wide air strikes, supply drops, storms, radio jamming, gold rush and bounties - several every match.</p></div></div>
 			<div class="feature"><img src="img/rooftops.jpg" alt="Fighting from rooftops" loading="lazy"><div><h3>Full 3D movement</h3><p>Look up and down, climb stairs and watchtowers, fight from rooftops, shoot through windows, crouch behind sandbags. Headshots count.</p></div></div>
 			<div class="feature"><img src="img/storm.jpg" alt="Thunderstorm on Green Valley" loading="lazy"><div><h3>8 battlefields</h3><p>Valley, desert, snow, ruined town, red canyon, harbor, marshlands and coastline - with four different base layouts. Or roll a random map.</p></div></div>
-			<div class="feature"><img src="img/menu.jpg" alt="Main menu" loading="lazy"><div><h3>Play your way</h3><p>Solo with AI squads, split-screen co-op, or LAN with automatic server discovery (Hamachi works too). 2 or 4 players per team.</p></div></div>
+			<div class="feature"><img src="img/coop.jpg" alt="Split-screen co-op with teammate name tags" loading="lazy"><div><h3>Play your way</h3><p>Solo with AI squads, split-screen co-op, or LAN with automatic server discovery (Hamachi works too). Teammate name tags and health bars keep your squad together.</p></div></div>
 		</div>
 		<div class="facts">
 			<div class="fact"><b>16</b><span>players per match</span></div>
-			<div class="fact"><b>8</b><span>weapons &amp; 5 vehicles</span></div>
-			<div class="fact"><b>8</b><span>maps, 4 layouts</span></div>
-			<div class="fact"><b>5</b><span>puzzle types</span></div>
+			<div class="fact"><b>12</b><span>weapons &amp; 5 vehicles</span></div>
+			<div class="fact"><b>8</b><span>maps &middot; 3 modes</span></div>
+			<div class="fact"><b>7</b><span>weathers &middot; 4 times of day</span></div>
 		</div>
 	</div>
 </section>
@@ -272,6 +304,12 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space
 		<h2><small>GALLERY</small>Screenshots</h2>
 		<p class="sub">Click to enlarge.</p>
 		<div class="gallery">
+			<a href="img/night.jpg"><img src="img/night.jpg" alt="Night battle" loading="lazy"><span>Night fight</span></a>
+			<a href="img/ctf.jpg"><img src="img/ctf.jpg" alt="Capture the Flag" loading="lazy"><span>Capture the Flag</span></a>
+			<a href="img/rain.jpg"><img src="img/rain.jpg" alt="Rain on Coastline" loading="lazy"><span>Rain</span></a>
+			<a href="img/fog.jpg"><img src="img/fog.jpg" alt="Fog over Ruined Town" loading="lazy"><span>Fog</span></a>
+			<a href="img/puzzle.jpg"><img src="img/puzzle.jpg" alt="Steady hand puzzle" loading="lazy"><span>Puzzle terminal</span></a>
+			<a href="img/coop.jpg"><img src="img/coop.jpg" alt="Split-screen co-op" loading="lazy"><span>Split-screen co-op</span></a>
 			<a href="img/vehicles.jpg"><img src="img/vehicles.jpg" alt="Vehicles" loading="lazy"><span>Harbor Yard</span></a>
 			<a href="img/mortar.jpg"><img src="img/mortar.jpg" alt="Mortar view" loading="lazy"><span>Mortar view</span></a>
 			<a href="img/airstrike.jpg"><img src="img/airstrike.jpg" alt="Air strike" loading="lazy"><span>Air strike</span></a>
@@ -284,6 +322,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space
 		</div>
 	</div>
 </section>
+
 
 <section class="alt" id="download">
 	<div class="wrap">
@@ -348,7 +387,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space
 			</table>
 			<div class="panel">
 				<h3>LAN &amp; Hamachi</h3>
-				<p>One player clicks <b>HOST LAN GAME</b>; everyone else clicks <b>JOIN LAN GAME</b> - hosts on your network show up automatically, including over Hamachi. Teams of 2 or 4, empty slots filled with AI, everyone picks their own vehicle in the lobby.</p>
+				<p>One player clicks <b>HOST LAN GAME</b>; everyone else clicks <b>JOIN LAN GAME</b> - hosts on your network show up automatically, including over Hamachi. The host picks map, mode, 2 or 4 teams, weather and time of day; empty slots are filled with AI. Set your name and team in the lobby; the first player of each pair picks the vehicle.</p>
 				<ul>
 					<li>Allow the game through your firewall when asked (UDP ports 7777 &amp; 7778).</li>
 					<li>On Hamachi, make sure the network is allowed on "Public" networks in Windows Firewall.</li>
