@@ -19,7 +19,12 @@ const SMG := 4
 const SHOTGUN := 5
 const SNIPER := 6
 const LMG := 7
-const NUM_WEAPONS := 8
+const BURST := 8
+const DMR := 9
+const MPISTOL := 10
+const DBARREL := 11
+const RPG := 12
+const NUM_WEAPONS := 13
 
 const BASE_FOV := 46.0
 const WIND := 1.0 # flip to -1.0 if triangle winding is ever inverted
@@ -50,6 +55,7 @@ class Rig:
 	var hip_only: Array[Node3D] = [] # hidden when fully aimed (scope lenses)
 	var ads_only: Array[Node3D] = [] # shown only when fully aimed (scope reticle)
 	var extra: Node3D = null # e.g. shotgun shell in hand
+	var icon_keep: Node3D = null # part of an arm that stays in the side-view icon (the knife)
 
 
 var _ready_done := false
@@ -181,6 +187,11 @@ func setup(team_color: Color) -> void:
 	_build_shotgun(_rigs[SHOTGUN])
 	_build_sniper(_rigs[SNIPER])
 	_build_lmg(_rigs[LMG])
+	_build_burst(_rigs[BURST])
+	_build_dmr(_rigs[DMR])
+	_build_mpistol(_rigs[MPISTOL])
+	_build_dbarrel(_rigs[DBARREL])
+	_build_rpg(_rigs[RPG])
 	for r in _rigs:
 		if r.mag != null:
 			r.mag_rest = r.mag.position
@@ -583,6 +594,7 @@ func _build_knife(r: Rig) -> void:
 	blade.position = Vector3.ZERO
 	_box(k, Vector3(0.0058, 0.11, 0.004), Vector3(0.0, 0.12, 0.004), m_steel, Vector3.ZERO, 0.0) # fuller
 	_prof(k, [-0.013, 0.058, -0.004, 0.058, -0.006, 0.17, -0.013, 0.186], 0.006, 0.0, m_gun, 0.0) # serrated spine
+	r.icon_keep = k
 
 
 func _build_pistol(r: Rig) -> void:
@@ -1060,6 +1072,354 @@ func _build_lmg(r: Rig) -> void:
 	_left_cup_arm(r, R, _P(0.28, -0.084), 0.028, _P(0.04, -0.43, -0.25))
 
 
+## Bullpup burst rifle: polymer shell, magazine behind the grip, enclosed trigger guard, tube red dot.
+func _build_burst(r: Rig) -> void:
+	r.hip_pos = Vector3(0.165, -0.066, -0.43)
+	r.hip_rot = Vector3(2.0, 5.0, -12.0)
+	r.ads_pos = Vector3(0.0, 0.0, -0.21)
+	r.ads_fov = 42.0
+	r.pivot = _P(0.06, -0.1)
+	r.muzzle = _P(0.62, -0.06)
+	r.flash_scale = 0.95
+	r.kick_back = 0.028
+	r.kick_rot = 3.0
+	var R := r.root
+	var bore := -0.06
+	# stock shell (OD polymer) from the butt to the front of the action
+	_prof(R, [-0.36, -0.04, 0.17, -0.04, 0.17, -0.092, 0.125, -0.1, 0.02, -0.1, -0.05, -0.112, -0.22, -0.118, -0.29, -0.15, -0.36, -0.152], 0.046, 0.0, m_od, 0.012)
+	_prof(R, [-0.36, -0.04, -0.376, -0.042, -0.376, -0.152, -0.36, -0.152], 0.048, 0.0, m_poly, 0.004) # butt pad
+	_prof(R, [-0.34, -0.04, -0.22, -0.04, -0.23, -0.031, -0.33, -0.033], 0.036, 0.0, m_poly2, 0.005) # cheek rest
+	_box(R, Vector3(0.002, 0.018, 0.07), _P(-0.2, -0.07, 0.0232), m_dark) # ejection port
+	_box(R, Vector3(0.0465, 0.004, 0.36), _P(-0.08, -0.098), m_poly2) # parting line
+	# steel receiver top + rail behind the sight
+	_box(R, Vector3(0.032, 0.014, 0.26), _P(0.01, -0.036), m_gun, Vector3.ZERO, 0.003)
+	_box(R, Vector3(0.022, 0.008, 0.11), _P(-0.035, -0.027), m_gun, Vector3.ZERO, 0.002)
+	for j in 4:
+		_box(R, Vector3(0.024, 0.004, 0.009), _P(-0.08 + float(j) * 0.024, -0.022), m_gun2)
+	_cyl(R, 0.006, 0.1, 0.16, -0.05, -0.026, m_gun2, 8) # charging handle
+	# pistol grip + big enclosed trigger guard
+	_prof(R, [0.035, -0.098, 0.088, -0.098, 0.072, -0.198, 0.028, -0.202, 0.03, -0.18, 0.034, -0.13], 0.03, 0.0, m_od, 0.006)
+	_box(R, Vector3(0.012, 0.009, 0.1), _P(0.14, -0.192), m_od, Vector3.ZERO, 0.003)
+	_box(R, Vector3(0.012, 0.1, 0.014), _P(0.19, -0.143), m_od, Vector3.ZERO, 0.003)
+	_box(R, Vector3(0.006, 0.02, 0.006), _P(0.1, -0.112), m_dark, Vector3(-12.0, 0.0, 0.0)) # trigger
+	_box(R, Vector3(0.05, 0.006, 0.01), _P(0.03, -0.075), m_gun2) # burst selector
+	# handguard, barrel, gas block, flash hider
+	_box(R, Vector3(0.05, 0.05, 0.17), _P(0.255, bore - 0.004), m_poly, Vector3.ZERO, 0.014)
+	for j in 4:
+		_box(R, Vector3(0.052, 0.01, 0.02), _P(0.205 + float(j) * 0.034, bore - 0.008), m_dark, Vector3.ZERO, 0.003)
+	_cyl(R, 0.0092, 0.34, 0.57, bore, 0.0, m_gun, 12)
+	_box(R, Vector3(0.022, 0.03, 0.026), _P(0.38, bore + 0.006), m_gun2, Vector3.ZERO, 0.004)
+	_cyl(R, 0.012, 0.555, 0.625, bore, 0.0, m_gun2, 10)
+	for j in 3:
+		var a := TAU * float(j) / 3.0
+		_box(R, Vector3(0.0025, 0.0025, 0.045), _P(0.6, bore + sin(a) * 0.0115, cos(a) * 0.0115), m_dark)
+	# compact tube red dot on a riser
+	_box(R, Vector3(0.022, 0.02, 0.05), _P(0.045, -0.022), m_gun, Vector3.ZERO, 0.003)
+	_cyl(R, 0.0132, 0.02, 0.07, 0.0, 0.0, m_scope_in, 16, -1.0, false)
+	_cyl(R, 0.015, 0.02, 0.07, 0.0, 0.0, m_od, 18, -1.0, false)
+	_ring(R, 0.0122, 0.0158, _P(0.02, 0.0), m_poly, 18)
+	_ring(R, 0.0122, 0.0158, _P(0.07, 0.0), m_poly, 18)
+	_box(R, Vector3(0.008, 0.007, 0.012), _P(0.045, 0.016), m_poly, Vector3.ZERO, 0.002)
+	_box(R, Vector3(0.007, 0.008, 0.012), _P(0.045, 0.0, 0.016), m_poly, Vector3.ZERO, 0.002)
+	var lens := _cyl(R, 0.0125, 0.064, 0.065, 0.0, 0.0, m_tint, 18)
+	lens.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var dot := _sphere(R, 0.0008, _P(0.063, 0.0), m_reddot, 8)
+	dot.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# magazine behind the grip (smoked polymer, curved)
+	var mg := _node(R, _P(-0.1, -0.11))
+	_prof(mg, [-0.024, 0.0, 0.024, 0.0, 0.034, -0.085, 0.047, -0.165, -0.002, -0.174, -0.012, -0.09], 0.024, 0.0, m_poly2, 0.004)
+	_box(mg, Vector3(0.027, 0.011, 0.054), Vector3(0.0, -0.172, -0.024), m_poly, Vector3(-10.0, 0.0, 0.0), 0.004)
+	for j in 3:
+		_box(mg, Vector3(0.025, 0.003, 0.028), Vector3(0.0, -0.03 - float(j) * 0.035, -0.002 - float(j) * 0.009), m_dark)
+	r.mag = mg
+	r.mag_grab = _P(-0.08, -0.24, 0.0)
+	# hands
+	_right_arm(r, _P(0.054, -0.152), Vector3(-18.0, 0.0, 0.0), 0.015, 0.023, _P(-0.3, -0.3, 0.14))
+	_left_cup_arm(r, R, _P(0.26, bore - 0.004), 0.026, _P(0.06, -0.42, -0.24))
+
+
+## Scoped-view overlay for a magnified optic: black mask with a round window of radius win at
+## the eyepiece (forward f), soft vignette and a reticle. chevron: SVD-style ^ with stadia lines.
+func _scope_view(R: Node3D, f: float, win: float, chevron: bool) -> Node3D:
+	var sc := _node(R, _P(f, 0.0))
+	var mask := _mi(sc, _annulus(win, 0.8, Color.BLACK, Color.BLACK), m_black.duplicate() as Material, Vector3.ZERO)
+	(mask.material_override as StandardMaterial3D).vertex_color_use_as_albedo = true
+	var vg_mat := StandardMaterial3D.new()
+	vg_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	vg_mat.vertex_color_use_as_albedo = true
+	vg_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	vg_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	_mi(sc, _annulus(win * 0.8, win + 0.0001, Color(0, 0, 0, 0.0), Color(0, 0, 0, 0.7)), vg_mat, Vector3(0.0, 0.0, 0.0002))
+	var lw := 0.00024
+	if chevron:
+		var red := m_reddot
+		for s: float in [-1.0, 1.0]:
+			_box(sc, Vector3(0.0032, lw * 1.6, 0.0001), Vector3(s * 0.00105, -0.001, 0.0004), red, Vector3(0.0, 0.0, -s * 52.0))
+		_box(sc, Vector3(win * 0.7, lw, 0.0001), Vector3(-win * 0.5, 0.0, 0.0004), m_black)
+		_box(sc, Vector3(win * 0.7, lw, 0.0001), Vector3(win * 0.5, 0.0, 0.0004), m_black)
+		for j in 4:
+			var y := -0.0035 - float(j) * 0.0022
+			_box(sc, Vector3(0.0022 - float(j) * 0.0003, lw, 0.0001), Vector3(0.0, y, 0.0004), m_black)
+		_box(sc, Vector3(lw, 0.0095, 0.0001), Vector3(0.0, -0.0075, 0.0004), m_black)
+	else:
+		_box(sc, Vector3(win * 2.0, lw, 0.0001), Vector3(0.0, 0.0, 0.0004), m_black)
+		_box(sc, Vector3(lw, win * 2.0, 0.0001), Vector3(0.0, 0.0, 0.0004), m_black)
+	for c in sc.get_children():
+		var gi := c as GeometryInstance3D
+		if gi != null:
+			gi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	return sc
+
+
+## Semi-auto marksman rifle: wooden handguard and skeleton stock, 10-round mag, medium scope.
+func _build_dmr(r: Rig) -> void:
+	r.hip_pos = Vector3(0.17, -0.07, -0.49)
+	r.hip_rot = Vector3(2.0, 5.0, -12.0)
+	r.ads_pos = Vector3(0.0, 0.0, -0.2)
+	r.ads_fov = 34.0
+	r.pivot = _P(0.0, -0.1)
+	r.muzzle = _P(0.78, -0.058)
+	r.flash_scale = 1.2
+	r.kick_back = 0.05
+	r.kick_rot = 6.5
+	var R := r.root
+	var bore := -0.058
+	# receiver + dust cover
+	_box(R, Vector3(0.032, 0.046, 0.25), _P(0.02, -0.068), m_gun, Vector3.ZERO, 0.006)
+	_prof(R, [-0.105, -0.044, 0.135, -0.044, 0.128, -0.034, -0.07, -0.03, -0.105, -0.036], 0.03, 0.0, m_gun2, 0.004)
+	_box(R, Vector3(0.002, 0.016, 0.06), _P(0.05, -0.062, 0.0165), m_dark)
+	var ch := _node(R, _P(0.09, -0.056, 0.016))
+	_box(ch, Vector3(0.018, 0.01, 0.016), Vector3(0.009, 0.0, 0.0), m_steel, Vector3.ZERO, 0.002)
+	r.anim = ch
+	# trigger group, guard, trigger
+	_prof(R, [-0.075, -0.09, 0.05, -0.09, 0.05, -0.102, -0.06, -0.102], 0.028, 0.0, m_gun, 0.003)
+	_box(R, Vector3(0.009, 0.007, 0.07), _P(0.0, -0.13), m_gun, Vector3.ZERO, 0.002)
+	_box(R, Vector3(0.009, 0.03, 0.007), _P(0.034, -0.115), m_gun, Vector3(-12.0, 0.0, 0.0), 0.002)
+	_box(R, Vector3(0.006, 0.018, 0.006), _P(-0.004, -0.114), m_steel, Vector3(-12.0, 0.0, 0.0))
+	# wooden handguard, gas tube cover
+	_box(R, Vector3(0.046, 0.042, 0.22), _P(0.255, bore - 0.006), m_wood, Vector3.ZERO, 0.014)
+	for j in 3:
+		_box(R, Vector3(0.0475, 0.006, 0.03), _P(0.2 + float(j) * 0.05, bore - 0.012), m_wood_dark, Vector3.ZERO, 0.002)
+	_box(R, Vector3(0.03, 0.018, 0.2), _P(0.255, bore + 0.022), m_wood_dark, Vector3.ZERO, 0.006)
+	_cyl(R, 0.012, 0.145, 0.155, bore, 0.0, m_gun2, 14)
+	# barrel, front sight block, slotted flash hider
+	_cyl(R, 0.0095, 0.365, 0.72, bore, 0.0, m_gun, 12)
+	_cyl(R, 0.0122, 0.365, 0.395, bore, 0.0, m_gun2, 12)
+	_box(R, Vector3(0.018, 0.034, 0.024), _P(0.5, bore + 0.01), m_gun, Vector3.ZERO, 0.003)
+	_cyl(R, 0.0125, 0.71, 0.785, bore, 0.0, m_gun2, 10)
+	for j in 4:
+		var a := TAU * float(j) / 4.0 + PI / 4.0
+		_box(R, Vector3(0.003, 0.003, 0.05), _P(0.758, bore + sin(a) * 0.012, cos(a) * 0.012), m_dark)
+	# skeleton wooden stock: pistol grip, lower bar, comb, butt
+	_prof(R, [-0.06, -0.096, -0.022, -0.1, -0.048, -0.19, -0.094, -0.196, -0.09, -0.152, -0.086, -0.11], 0.032, 0.0, m_wood, 0.007)
+	_prof(R, [-0.09, -0.168, -0.36, -0.15, -0.36, -0.126, -0.1, -0.146], 0.03, 0.0, m_wood, 0.006)
+	_prof(R, [-0.1, -0.044, -0.36, -0.05, -0.36, -0.088, -0.25, -0.082, -0.13, -0.076, -0.1, -0.09], 0.034, 0.0, m_wood, 0.006)
+	_prof(R, [-0.32, -0.085, -0.36, -0.085, -0.36, -0.13, -0.32, -0.13], 0.03, 0.0, m_wood, 0.004)
+	_prof(R, [-0.36, -0.044, -0.376, -0.044, -0.376, -0.155, -0.36, -0.155], 0.036, 0.0, m_poly, 0.004)
+	_prof(R, [-0.31, -0.049, -0.16, -0.046, -0.16, -0.036, -0.3, -0.036], 0.026, 0.0, m_wood_dark, 0.004)
+	# 10-round magazine (steel)
+	var mg := _node(R, _P(0.09, -0.096))
+	_prof(mg, [-0.03, 0.0, 0.03, 0.0, 0.04, -0.06, 0.044, -0.104, -0.014, -0.11, -0.022, -0.06], 0.026, 0.0, m_gun2, 0.004)
+	for j in 2:
+		_box(mg, Vector3(0.0265, 0.004, 0.04), Vector3(0.0, -0.035 - float(j) * 0.03, -0.004 - float(j) * 0.004), m_dark)
+	r.mag = mg
+	r.mag_grab = _P(0.1, -0.2, 0.0)
+	# scope on a side-rail bracket
+	_box(R, Vector3(0.018, 0.008, 0.2), _P(0.04, -0.03), m_gun, Vector3.ZERO, 0.002)
+	_box(R, Vector3(0.026, 0.03, 0.014), _P(-0.02, -0.016), m_gun, Vector3.ZERO, 0.004)
+	_box(R, Vector3(0.026, 0.03, 0.014), _P(0.1, -0.016), m_gun, Vector3.ZERO, 0.004)
+	_cyl(R, 0.0118, -0.07, 0.13, 0.0, 0.0, m_poly, 16, -1.0, false)
+	_cyl(R, 0.0168, -0.11, -0.07, 0.0, 0.0, m_poly, 18, 0.0118, false)
+	_cyl(R, 0.0172, -0.128, -0.11, 0.0, 0.0, m_poly, 18, -1.0, false)
+	_ring(R, 0.0142, 0.0182, _P(-0.128, 0.0), m_poly2, 20)
+	_cyl(R, 0.0118, 0.13, 0.17, 0.0, 0.0, m_poly, 18, 0.0195, false)
+	_cyl(R, 0.0198, 0.17, 0.205, 0.0, 0.0, m_poly, 20, -1.0, false)
+	_ring(R, 0.0168, 0.0205, _P(0.205, 0.0), m_poly2, 20)
+	_cyl(R, 0.0125, 0.03, 0.05, 0.0, 0.0, m_poly2, 12)
+	_mi(R, _cyl_mesh(0.0085, 0.0085, 0.016, 12, true), m_poly, _P(0.04, 0.018), Vector3.ZERO)
+	_mi(R, _cyl_mesh(0.0085, 0.0085, 0.016, 12, true), m_poly, _P(0.04, 0.0, 0.018), Vector3(0.0, 0.0, 90.0))
+	var eye_lens := _mi(R, _cyl_mesh(0.0152, 0.0152, 0.002, 18, true), m_glass, _P(-0.124, 0.0), Vector3(-90.0, 0.0, 0.0))
+	var obj_lens := _mi(R, _cyl_mesh(0.018, 0.018, 0.002, 18, true), m_glass, _P(0.198, 0.0), Vector3(-90.0, 0.0, 0.0))
+	r.hip_only.append(eye_lens)
+	r.hip_only.append(obj_lens)
+	r.ads_only.append(_scope_view(R, -0.13, 0.0172, true))
+	# hands
+	_right_arm(r, _P(-0.062, -0.148), Vector3(-18.0, 0.0, 0.0), 0.016, 0.023, _P(-0.4, -0.29, 0.14))
+	_left_cup_arm(r, R, _P(0.25, bore - 0.006), 0.025, _P(0.02, -0.42, -0.24))
+
+
+## Machine pistol: two-tone pistol with a compensator, fire selector and a long 20-round mag.
+func _build_mpistol(r: Rig) -> void:
+	r.hip_pos = Vector3(0.135, -0.03, -0.39)
+	r.hip_rot = Vector3(2.0, 20.0, -12.0)
+	r.ads_pos = Vector3(0.0, 0.0, -0.32)
+	r.ads_fov = 50.0
+	r.pivot = _P(0.0, -0.09)
+	r.muzzle = _P(0.205, -0.022)
+	r.flash_scale = 0.6
+	r.kick_back = 0.022
+	r.kick_rot = 4.0
+	var R := r.root
+	# slide (black) with forward serrations
+	var sl := _node(R)
+	_prof(sl, [-0.032, -0.036, 0.162, -0.036, 0.165, -0.013, 0.157, -0.006, -0.026, -0.006, -0.032, -0.012], 0.026, 0.0, m_stainless, 0.003)
+	for j in 5:
+		_box(sl, Vector3(0.0275, 0.018, 0.0025), _P(-0.024 + float(j) * 0.0055, -0.02), m_dark)
+	for j in 3:
+		_box(sl, Vector3(0.0275, 0.016, 0.0025), _P(0.12 + float(j) * 0.0055, -0.021), m_dark)
+	_box(sl, Vector3(0.012, 0.002, 0.032), _P(0.05, -0.0058, 0.002), m_dark)
+	_box(sl, Vector3(0.022, 0.004, 0.009), _P(-0.02, -0.006), m_gun)
+	_box(sl, Vector3(0.007, 0.007, 0.009), _P(-0.02, -0.0035, 0.0068), m_gun, Vector3.ZERO, 0.0015)
+	_box(sl, Vector3(0.007, 0.007, 0.009), _P(-0.02, -0.0035, -0.0068), m_gun, Vector3.ZERO, 0.0015)
+	_box(sl, Vector3(0.0038, 0.0068, 0.007), _P(0.15, -0.0034), m_fiber)
+	r.anim = sl
+	# compensator on the frame (doesn't move with the slide), ports on top
+	_box(R, Vector3(0.027, 0.03, 0.038), _P(0.185, -0.022), m_gun2, Vector3.ZERO, 0.004)
+	for j in 3:
+		_box(R, Vector3(0.012, 0.004, 0.006), _P(0.174 + float(j) * 0.01, -0.0065), m_dark)
+	# frame (polymer)
+	_prof(R, [-0.034, -0.036, 0.166, -0.036, 0.168, -0.053, 0.062, -0.053, 0.05, -0.058, -0.004, -0.058, -0.03, -0.05], 0.0235, 0.0, m_poly, 0.003)
+	_box(R, Vector3(0.026, 0.008, 0.07), _P(0.12, -0.056), m_poly, Vector3.ZERO, 0.002)
+	_box(R, Vector3(0.004, 0.01, 0.012), _P(-0.018, -0.042, 0.0135), m_steel, Vector3(0.0, 0.0, 0.0), 0.0015) # selector
+	_prof(R, [-0.036, -0.05, 0.008, -0.052, 0.004, -0.072, -0.012, -0.158, -0.052, -0.158, -0.05, -0.11, -0.053, -0.062, -0.05, -0.045], 0.03, 0.0, m_poly, 0.005)
+	for j in 4:
+		_box(R, Vector3(0.031, 0.004, 0.034), _P(-0.03 + float(j) * 0.0035, -0.09 - float(j) * 0.016), m_poly2, Vector3(-14.0, 0.0, 0.0))
+	_box(R, Vector3(0.009, 0.0065, 0.05), _P(0.033, -0.082), m_poly, Vector3.ZERO, 0.002)
+	_box(R, Vector3(0.009, 0.03, 0.0065), _P(0.058, -0.068), m_poly, Vector3(-18.0, 0.0, 0.0), 0.002)
+	_box(R, Vector3(0.006, 0.018, 0.006), _P(0.022, -0.067), m_dark, Vector3(-10.0, 0.0, 0.0))
+	# extended magazine sticking out well below the grip
+	var mg := _node(R, _P(-0.03, -0.1))
+	_box(mg, Vector3(0.021, 0.19, 0.03), Vector3(0.0, -0.05, -0.002), m_gun, Vector3(-12.0, 0.0, 0.0), 0.003)
+	_box(mg, Vector3(0.022, 0.004, 0.026), Vector3(0.0, -0.085, -0.012), m_dark, Vector3(-12.0, 0.0, 0.0))
+	_box(mg, Vector3(0.03, 0.01, 0.042), Vector3(0.0, -0.143, -0.025), m_poly2, Vector3(-12.0, 0.0, 0.0), 0.003)
+	r.mag = mg
+	r.mag_grab = _P(-0.035, -0.26, -0.02)
+	# hands like the pistol
+	var gp := _P(-0.024, -0.108)
+	var grot := Vector3(-16.0, 0.0, 0.0)
+	_right_arm(r, gp, grot, 0.0155, 0.024, _P(-0.26, -0.3, 0.24))
+	var la := _node(R)
+	var hf := _node(la, gp + Vector3(-0.012, -0.016, -0.006), grot + Vector3(0.0, -10.0, 0.0))
+	hf.scale = Vector3(1.06, 1.06, 1.06)
+	var w := hf.transform * _grip_hand(hf, 0.017, 0.026, -1.0, false)
+	_forearm(la, w, _P(-0.24, -0.32, -0.26))
+	r.left_arm = la
+	r.left_hand = Vector3.ZERO
+
+
+## Side-by-side double-barrel: break action (anim = barrels + forend on the hinge), two triggers.
+func _build_dbarrel(r: Rig) -> void:
+	r.hip_pos = Vector3(0.17, -0.06, -0.47)
+	r.hip_rot = Vector3(2.0, 5.0, -12.0)
+	r.ads_pos = Vector3(0.0, 0.0, -0.3)
+	r.ads_fov = 50.0
+	r.pivot = _P(-0.05, -0.08)
+	r.muzzle = _P(0.62, -0.02)
+	r.flash_scale = 1.6
+	r.kick_back = 0.075
+	r.kick_rot = 12.0
+	var R := r.root
+	# action (polished steel) with the top lever
+	_prof(R, [-0.082, -0.013, 0.05, -0.013, 0.05, -0.064, -0.012, -0.07, -0.082, -0.062], 0.046, 0.0, m_steel, 0.005)
+	_box(R, Vector3(0.047, 0.004, 0.05), _P(0.0, -0.045), m_stainless) # engraving band
+	_box(R, Vector3(0.012, 0.006, 0.034), _P(-0.07, -0.006, 0.006), m_steel, Vector3(0.0, -18.0, 0.0), 0.002)
+	# barrels + forend on the hinge (front-bottom of the action)
+	var hb := 0.05
+	var hu := -0.052
+	var hinge := _node(R, _P(hb, hu))
+	for s: float in [-1.0, 1.0]:
+		_cyl(hinge, 0.0118, 0.0, 0.57, -0.02 - hu, s * 0.0122, m_gun, 14)
+		_cyl(hinge, 0.0085, 0.566, 0.572, -0.02 - hu, s * 0.0122, m_dark, 10)
+		_cyl(hinge, 0.0121, -0.002, 0.004, -0.02 - hu, s * 0.0122, m_brass, 12) # shell rims
+	_box(hinge, Vector3(0.008, 0.006, 0.55), _P(0.285, -0.007 - hu), m_gun2)
+	_box(hinge, Vector3(0.012, 0.01, 0.5), _P(0.3, -0.032 - hu), m_gun)
+	_sphere(hinge, 0.0028, _P(0.556, -0.0018 - hu), m_brass, 8)
+	_box(hinge, Vector3(0.05, 0.012, 0.035), _P(0.02, -0.036 - hu), m_steel, Vector3.ZERO, 0.003) # lump
+	_box(hinge, Vector3(0.044, 0.03, 0.17), _P(0.13, -0.046 - hu), m_wood, Vector3.ZERO, 0.012)
+	for j in 5:
+		_box(hinge, Vector3(0.0455, 0.0315, 0.004), _P(0.08 + float(j) * 0.025, -0.046 - hu), m_wood_dark, Vector3.ZERO, 0.011)
+	r.anim = hinge
+	# straight-grip stock, butt pad
+	_prof(R, [-0.082, -0.016, -0.082, -0.062, -0.11, -0.078, -0.15, -0.108, -0.39, -0.148, -0.4, -0.143, -0.4, -0.052, -0.37, -0.048, -0.16, -0.064, -0.11, -0.046], 0.036, 0.0, m_wood, 0.008)
+	_prof(R, [-0.4, -0.145, -0.416, -0.146, -0.416, -0.05, -0.4, -0.05], 0.038, 0.0, m_poly, 0.004)
+	# trigger guard, two triggers
+	_box(R, Vector3(0.009, 0.007, 0.075), _P(-0.032, -0.098), m_steel, Vector3.ZERO, 0.002)
+	_box(R, Vector3(0.009, 0.03, 0.007), _P(0.004, -0.084), m_steel, Vector3(-12.0, 0.0, 0.0), 0.002)
+	_box(R, Vector3(0.006, 0.02, 0.006), _P(-0.016, -0.08), m_steel, Vector3(-12.0, 0.0, 0.0))
+	_box(R, Vector3(0.006, 0.02, 0.006), _P(-0.038, -0.08), m_steel, Vector3(-18.0, 0.0, 0.0))
+	# hands: right on the wrist, left on the forend (rides with the barrels)
+	_right_arm(r, _P(-0.128, -0.085), Vector3(-50.0, 0.0, 0.0), 0.015, 0.022, _P(-0.42, -0.28, 0.12), true)
+	_left_cup_arm(r, hinge, _P(0.13, -0.046 - hu), 0.024, _P(0.04 - hb, -0.42 - hu, -0.24))
+	r.mag_grab = _P(-0.04, 0.03, 0.0) # breech, hinge space
+	var sh := _node(r.left_arm, _P(0.13, -0.08 - hu, 0.0))
+	for s: float in [-1.0, 1.0]:
+		_cyl(sh, 0.0095, -0.03, 0.035, 0.0, s * 0.011, m_shell, 10)
+		_cyl(sh, 0.0102, -0.045, -0.03, 0.0, s * 0.011, m_brass, 10)
+	sh.visible = false
+	r.extra = sh
+
+
+## RPG-style rocket launcher on the shoulder; the warhead (= mag) is loaded from the front.
+func _build_rpg(r: Rig) -> void:
+	r.hip_pos = Vector3(0.15, -0.05, -0.36)
+	r.hip_rot = Vector3(1.0, 4.0, -6.0)
+	r.ads_pos = Vector3(0.0, 0.0, -0.2)
+	r.ads_fov = 44.0
+	r.pivot = _P(0.0, -0.1)
+	r.muzzle = _P(0.36, -0.065)
+	r.flash_scale = 1.4
+	r.kick_back = 0.05
+	r.kick_rot = 5.0
+	var R := r.root
+	var bore := -0.065
+	# launch tube (olive), wooden heat guard, rear blast cone
+	_cyl(R, 0.021, -0.42, 0.345, bore, 0.0, m_od, 18)
+	_cyl(R, 0.0245, -0.07, 0.16, bore, 0.0, m_wood, 18)
+	_cyl(R, 0.0255, -0.078, -0.066, bore, 0.0, m_gun, 18)
+	_cyl(R, 0.0255, 0.156, 0.168, bore, 0.0, m_gun, 18)
+	_cyl(R, 0.024, 0.322, 0.348, bore, 0.0, m_gun, 18)
+	_cyl(R, 0.04, -0.56, -0.43, bore, 0.0, m_gun, 18, 0.022, false)
+	_cyl(R, 0.0405, -0.565, -0.555, bore, 0.0, m_gun2, 18)
+	_cyl(R, 0.034, -0.52, -0.515, bore, 0.0, m_dark, 16)
+	_cyl(R, 0.0225, -0.44, -0.415, bore, 0.0, m_gun2, 16)
+	# trigger housing, pistol grip, guard, forward grip
+	_box(R, Vector3(0.026, 0.026, 0.16), _P(0.06, bore - 0.03), m_gun, Vector3.ZERO, 0.004)
+	_prof(R, [0.0, -0.105, 0.036, -0.105, 0.02, -0.195, -0.022, -0.198, -0.02, -0.175, -0.012, -0.12], 0.03, 0.0, m_wood, 0.006)
+	_box(R, Vector3(0.008, 0.006, 0.065), _P(0.062, -0.136), m_gun, Vector3.ZERO, 0.002)
+	_box(R, Vector3(0.008, 0.032, 0.006), _P(0.094, -0.12), m_gun, Vector3.ZERO, 0.002)
+	_box(R, Vector3(0.006, 0.02, 0.006), _P(0.05, -0.115), m_dark, Vector3(-12.0, 0.0, 0.0))
+	_prof(R, [0.1, -0.102, 0.135, -0.102, 0.128, -0.185, 0.094, -0.186, 0.098, -0.13], 0.03, 0.0, m_wood, 0.006)
+	# folding iron sights: rear aperture, front post (top on y = 0)
+	_box(R, Vector3(0.03, 0.012, 0.02), _P(-0.04, bore + 0.024), m_gun, Vector3.ZERO, 0.002)
+	_box(R, Vector3(0.005, 0.04, 0.01), _P(-0.04, -0.022, 0.012), m_gun, Vector3.ZERO, 0.0015)
+	_box(R, Vector3(0.005, 0.04, 0.01), _P(-0.04, -0.022, -0.012), m_gun, Vector3.ZERO, 0.0015)
+	_ring(R, 0.0045, 0.0085, _P(-0.04, 0.0), m_gun, 14)
+	_box(R, Vector3(0.034, 0.012, 0.02), _P(0.26, bore + 0.024), m_gun, Vector3.ZERO, 0.002)
+	_box(R, Vector3(0.004, 0.05, 0.006), _P(0.26, -0.018, 0.014), m_gun, Vector3.ZERO, 0.0015)
+	_box(R, Vector3(0.004, 0.05, 0.006), _P(0.26, -0.018, -0.014), m_gun, Vector3.ZERO, 0.0015)
+	_box(R, Vector3(0.032, 0.004, 0.006), _P(0.26, 0.007), m_gun)
+	_box(R, Vector3(0.0035, 0.038, 0.004), _P(0.26, -0.019), m_gun2)
+	# warhead (loaded from the front)
+	var rk := _node(R, _P(0.345, bore))
+	_cyl(rk, 0.0195, -0.02, 0.012, 0.0, 0.0, m_gun2, 14)
+	_cyl(rk, 0.02, 0.012, 0.045, 0.0, 0.0, m_od, 18, 0.042)
+	_cyl(rk, 0.042, 0.045, 0.11, 0.0, 0.0, m_od, 18)
+	_cyl(rk, 0.0425, 0.07, 0.078, 0.0, 0.0, m_tan, 18)
+	_cyl(rk, 0.042, 0.11, 0.2, 0.0, 0.0, m_od, 18, 0.012)
+	_cyl(rk, 0.009, 0.2, 0.235, 0.0, 0.0, m_steel, 10, 0.004)
+	r.mag = rk
+	r.mag_grab = _P(0.42, -0.12, -0.03)
+	# hands: right on the pistol grip, left on the forward grip
+	_right_arm(r, _P(0.006, -0.15), Vector3(-14.0, 0.0, 0.0), 0.015, 0.023, _P(-0.36, -0.3, 0.14))
+	var lp := _P(0.115, -0.145)
+	var la := _node(R)
+	var hf := _node(la, lp, Vector3(-8.0, 0.0, 0.0))
+	var w := hf.transform * _grip_hand(hf, 0.015, 0.016, -1.0, false)
+	_forearm(la, w, _P(0.0, -0.42, -0.24))
+	r.left_arm = la
+	r.left_hand = lp
+
+
 # --------------------------------------------------------- flash/throw ----
 
 func _build_flash() -> void:
@@ -1187,7 +1547,9 @@ func get_ads_zoom(weapon: int, ads: float) -> float:
 	var z := 1.0
 	if weapon == SNIPER:
 		z = 0.3
-	elif weapon == RIFLE or weapon == LMG or weapon == SMG:
+	elif weapon == DMR:
+		z = 0.42
+	elif weapon == RIFLE or weapon == LMG or weapon == SMG or weapon == BURST or weapon == RPG:
 		z = 0.8
 	elif weapon != KNIFE:
 		z = 0.88
@@ -1264,7 +1626,7 @@ func update_pose(weapon: int, st: Dictionary) -> void:
 	rot.z += sway * 3.0 * sway_k
 
 	# ---- sprint
-	if w == PISTOL or w == REVOLVER:
+	if w == PISTOL or w == REVOLVER or w == MPISTOL:
 		pos += Vector3(-0.03, -0.07, 0.04) * sp
 		rot += Vector3(-28.0, 18.0, 10.0) * sp
 	elif w == KNIFE:
@@ -1306,6 +1668,12 @@ func update_pose(weapon: int, st: Dictionary) -> void:
 			SHOTGUN:
 				rot += Vector3(4.0, -10.0, -30.0) * rl * depth
 				pos += Vector3(0.0, -0.01, 0.0) * rl
+			DBARREL:
+				rot += Vector3(14.0, -12.0, -12.0) * rl * depth
+				pos += Vector3(-0.02, -0.01, 0.03) * rl
+			RPG:
+				rot += Vector3(-6.0, -6.0, -8.0) * rl * depth
+				pos += Vector3(0.0, -0.03, 0.0) * rl
 			KNIFE:
 				rot += Vector3(10.0, -20.0, -25.0) * rl
 			_:
@@ -1328,7 +1696,7 @@ func update_pose(weapon: int, st: Dictionary) -> void:
 	r.root.transform = Transform3D(b, pos + r.pivot - b * r.pivot)
 
 	# ---- per-weapon moving parts
-	_animate_parts(r, w, kick, reload)
+	_animate_parts(r, w, kick, reload, _f(st, "empty") > 0.5)
 	if r.left_arm != null:
 		r.left_arm.visible = tw_low < 0.25
 
@@ -1363,12 +1731,29 @@ func update_pose(weapon: int, st: Dictionary) -> void:
 	_animate_throw(throw)
 
 
-func _animate_parts(r: Rig, w: int, kick: float, reload: float) -> void:
+func _animate_parts(r: Rig, w: int, kick: float, reload: float, empty: bool = false) -> void:
 	var rel := reload > 0.0 and reload < 1.0
 	# magazine swap + left hand
 	var lhand := Vector3.ZERO
 	var lrot := Vector3.ZERO
-	if r.mag != null:
+	if r.mag != null and w == RPG:
+		# the spent rocket is gone; a new one slides in from the front, carried by the left hand
+		var off := Vector3.ZERO
+		var vis := not empty
+		if rel:
+			vis = reload > 0.36
+			var u := smoothstep(0.36, 0.7, reload)
+			off = _P(0.16, -0.14, -0.04).lerp(Vector3.ZERO, u)
+			var grab := r.mag_grab - r.left_hand
+			var below := grab + _P(0.0, -0.18, -0.02)
+			var tt := PackedFloat32Array([0.0, 0.1, 0.24, 0.36, 0.7, 0.84, 1.0])
+			lhand = _kf(reload, tt, PackedVector3Array([Vector3.ZERO, Vector3.ZERO, below, grab + off, grab, Vector3.ZERO, Vector3.ZERO]))
+			if reload > 0.36 and reload < 0.7:
+				lhand = grab + off
+			lrot = Vector3(-30.0, 0.0, 70.0) * _hump(reload, 0.12, 0.3, 0.7, 0.84)
+		r.mag.position = r.mag_rest + off
+		r.mag.visible = vis
+	elif r.mag != null:
 		var mag_off := Vector3.ZERO
 		var mag_vis := true
 		if rel and w != REVOLVER and w != SHOTGUN:
@@ -1381,20 +1766,20 @@ func _animate_parts(r: Rig, w: int, kick: float, reload: float) -> void:
 			elif p >= 0.5 and p < 0.74:
 				var u2 := smoothstep(0.5, 0.74, p)
 				mag_off = Vector3(-0.01, -0.2, 0.0).lerp(Vector3.ZERO, u2)
-			if r.left_arm != null and w != PISTOL:
+			if r.left_arm != null and w != PISTOL and w != MPISTOL:
 				var grab := r.mag_grab - r.left_hand
 				var below := grab + Vector3(-0.04, -0.25, 0.05)
 				var tt := PackedFloat32Array([0.0, 0.1, 0.2, 0.34, 0.5, 0.6, 0.74, 0.88, 1.0])
 				lhand = _kf(p, tt, PackedVector3Array([Vector3.ZERO, Vector3.ZERO, grab, below, below, grab + Vector3(-0.01, -0.2, 0.0) * 0.6, grab, Vector3.ZERO, Vector3.ZERO]))
 				lrot = Vector3(0.0, 0.0, 12.0) * _hump(p, 0.1, 0.2, 0.74, 0.88)
-			elif r.left_arm != null and w == PISTOL:
+			elif r.left_arm != null:
 				var below_p := Vector3(-0.05, -0.22, 0.06)
 				var tt2 := PackedFloat32Array([0.0, 0.25, 0.4, 0.5, 0.74, 0.85])
 				lhand = _kf(p, tt2, PackedVector3Array([Vector3.ZERO, Vector3.ZERO, below_p, below_p, mag_off + Vector3(-0.01, -0.03, 0.0), Vector3.ZERO]))
 		r.mag.position = r.mag_rest + mag_off
 		r.mag.visible = mag_vis
 	match w:
-		PISTOL:
+		PISTOL, MPISTOL:
 			var back := 0.03 * smoothstep(0.45, 0.8, kick)
 			if rel:
 				back = maxf(back, 0.03 * _hump(reload, 0.06, 0.12, 0.82, 0.88))
@@ -1453,9 +1838,96 @@ func _animate_parts(r: Rig, w: int, kick: float, reload: float) -> void:
 			if rel:
 				op = _hump(reload, 0.08, 0.2, 0.76, 0.88)
 			r.anim.transform = Transform3D(Basis(Vector3(1.0, 0.0, 0.0), deg_to_rad(55.0) * op), r.anim_rest.origin)
+		DMR:
+			var back2 := 0.045 * smoothstep(0.5, 0.85, kick)
+			if rel:
+				back2 = maxf(back2, 0.06 * _hump(reload, 0.72, 0.8, 0.84, 0.9))
+			r.anim.transform = r.anim_rest.translated(Vector3(0.0, 0.0, back2))
+		DBARREL:
+			var open := 0.0
+			var show := false
+			if rel:
+				open = _hump(reload, 0.04, 0.16, 0.82, 0.92)
+				var breech := r.mag_grab - r.left_hand
+				var fetch := breech + Vector3(-0.06, -0.24, 0.08)
+				var tt5 := PackedFloat32Array([0.0, 0.16, 0.3, 0.42, 0.55, 0.66, 0.8, 1.0])
+				lhand = _kf(reload, tt5, PackedVector3Array([Vector3.ZERO, Vector3.ZERO, fetch, fetch, breech, breech, Vector3.ZERO, Vector3.ZERO]))
+				lrot = Vector3(0.0, 0.0, 20.0) * _hump(reload, 0.16, 0.3, 0.66, 0.8)
+				show = reload > 0.36 and reload < 0.6
+			r.anim.transform = Transform3D(Basis(Vector3(1.0, 0.0, 0.0), -deg_to_rad(34.0) * open), r.anim_rest.origin)
+			if r.extra != null:
+				r.extra.visible = show
 	if r.left_arm != null:
 		var lb := Basis.from_euler(lrot * (PI / 180.0))
 		r.left_arm.transform = Transform3D(lb, lhand + r.left_hand - lb * r.left_hand)
+
+
+# ------------------------------------------------------------- icons ----
+
+var _icon_light: DirectionalLight3D = null
+
+
+## Side-view icon rendering (weapon_icons.gd, on its own instance): shows rig w alone at rest,
+## without arms, flash or scope overlay, seen from its right side by an orthographic camera
+## fitted to the gun (muzzle to the right of the image).
+func icon_pose(w: int) -> void:
+	if not _ready_done or w < 0 or w >= _rigs.size():
+		return
+	var r: Rig = _rigs[w]
+	for i in _rigs.size():
+		_rigs[i].root.visible = (i == w)
+	_cur = -1
+	r.root.transform = Transform3D.IDENTITY
+	_animate_parts(r, w, 0.0, 0.0)
+	if r.icon_keep != null and r.icon_keep.get_parent() != r.root:
+		r.icon_keep.reparent(r.root, false)
+		r.icon_keep.transform = Transform3D(Basis(Vector3(1.0, 0.0, 0.0), Vector3(0.0, 0.0, -1.0), Vector3(0.0, 1.0, 0.0)) * Basis.from_scale(Vector3(1.15, 1.2, 1.15)), Vector3.ZERO)
+	for n: Node3D in [r.right_arm, r.left_arm, r.extra]:
+		if n != null:
+			n.visible = false
+	for n in r.ads_only:
+		n.visible = false
+	for n in r.hip_only:
+		n.visible = true
+	_flash.visible = false
+	_flash_light.visible = false
+	_throw_arm.visible = false
+	_fly_nade.visible = false
+	# fit the camera to the visible meshes
+	var box := AABB()
+	var first := true
+	var stack: Array[Node] = [r.root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		var n3 := n as Node3D
+		if n3 != null and not n3.visible:
+			continue
+		var mi := n as MeshInstance3D
+		if mi != null and mi.mesh != null:
+			var bb: AABB = mi.global_transform * mi.get_aabb()
+			box = bb if first else box.merge(bb)
+			first = false
+		stack.append_array(n.get_children())
+	var c := box.get_center()
+	var aspect := float(maxi(size.x, 1)) / float(maxi(size.y, 1))
+	_cam.projection = Camera3D.PROJECTION_ORTHOGONAL
+	_cam.keep_aspect = Camera3D.KEEP_HEIGHT
+	_cam.size = maxf(box.size.y, box.size.z / aspect) * 1.04
+	_cam.near = 0.01
+	_cam.far = 10.0
+	_cam.transform = Transform3D(Basis(Vector3.UP, PI * 0.5), Vector3(box.end.x + 1.0, c.y, c.z))
+	if _icon_light == null:
+		# brighter than in-game so the dark metal reads on dark UI backgrounds
+		for c2 in _world.get_children():
+			var we := c2 as WorldEnvironment
+			if we != null:
+				we.environment.ambient_light_energy = 1.25
+				we.environment.ambient_light_color = Color(0.62, 0.64, 0.7)
+		_icon_light = DirectionalLight3D.new()
+		_icon_light.light_color = Color(1.0, 0.97, 0.92)
+		_icon_light.light_energy = 1.7
+		_icon_light.transform = Transform3D(Basis.looking_at(Vector3(-0.75, -0.55, -0.35).normalized(), Vector3.UP), Vector3.ZERO)
+		_world.add_child(_icon_light)
 
 
 func _animate_throw(throw: float) -> void:

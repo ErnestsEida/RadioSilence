@@ -4,7 +4,7 @@ extends SceneTree
 ##   Godot_console.exe --path <project> --script res://tools/viewmodel_preview.gd -- --out=<dir> [--only=3] [--states=idle,ads]
 
 const VM := preload("res://scripts/viewmodel.gd")
-const NAMES := ["knife", "pistol", "revolver", "rifle", "smg", "shotgun", "sniper", "lmg"]
+const NAMES := ["knife", "pistol", "revolver", "rifle", "smg", "shotgun", "sniper", "lmg", "burst", "dmr", "mpistol", "dbarrel", "rpg"]
 
 var out_dir := "res://tools/preview_out"
 var only := -1
@@ -110,7 +110,7 @@ func _run() -> void:
 		"narrow": {"time": 1.0},
 		"narrow_ads": {"time": 1.0, "ads": 1.0},
 	}
-	for w in 8:
+	for w in NAMES.size():
 		if only >= 0 and w != only:
 			continue
 		var tiles: Array[Image] = []

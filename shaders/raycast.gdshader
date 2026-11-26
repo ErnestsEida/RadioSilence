@@ -47,6 +47,24 @@ uniform vec3 mount_col = vec3(0.30, 0.31, 0.37);
 uniform vec3 rock_tint = vec3(1.0);
 uniform float fog_dist = 42.0;
 
+// time of day / weather look (scripts/atmos.gd)
+uniform vec3 ambient = vec3(1.0);           // scene light multiplier (night: dark blue moonlight)
+uniform vec3 sun_col = vec3(0.3, 0.27, 0.21);
+uniform vec2 sun_dir = vec2(0.9, 0.22);     // sky angle (rad), height above the horizon (0..0.5)
+uniform float sun_size = 9.0;               // glow falloff (bigger = tighter)
+uniform float sun_disc = 0.5;
+uniform float stars = 0.0;
+uniform float clouds = 0.15;                // 0 few cloud bands .. 1 overcast
+uniform vec3 cloud_col = vec3(1.0);
+// dynamic lights: x, y, z, radius | rgb * intensity, spot cos cutoff (0 = omni) | spot direction
+uniform int light_count = 0;
+uniform vec4 lights[32];
+uniform vec4 light_cols[32];
+uniform vec2 light_dirs[32];
+// ground warning marks: x, y, radius, intensity 0..1 (red pulsing ring + fill on floors / block tops)
+uniform int mark_count = 0;
+uniform vec4 marks[16];
+
 const float HS = 40.0;     // height byte scale
 const float CEIL = 1.0;    // interior ceiling height
 const float MAXH = 6.4;    // nothing is taller than this
@@ -121,18 +139,53 @@ vec3 sky_color(float sy, vec2 ray) {
 	float ang = atan(ray.y, ray.x);
 	float up = 0.5 - sy;
 	vec3 c = mix(sky_hor, sky_top, clamp(up * 2.0, 0.0, 1.0));
-	// drifting cloud bands
+	// sun / moon: glow and disc
+	vec2 sd = vec2(atan(sin(ang - sun_dir.x), cos(ang - sun_dir.x)), (up - sun_dir.y) * 2.2);
+	float sdl = length(sd);
+	c += sun_col * exp(-sdl * sdl * sun_size);
+	// stars
 	float drift = time * 0.012;
+	if (stars > 0.0 && up > 0.03) {
+		vec2 g = vec2(ang * 110.0, up * 220.0);
+		float h = hash(floor(g));
+		if (h > 0.988 && length(fract(g) - 0.5) < 0.2) c += vec3(0.75, 0.8, 0.95) * stars * (0.5 + 0.5 * sin(time * 3.0 + h * 400.0)) * clamp(up * 6.0, 0.0, 1.0);
+	}
+	float sm = max(sun_col.r, max(sun_col.g, sun_col.b));
+	if (sun_disc > 0.0 && sm > 0.0) c = mix(c, sun_col / sm * 1.1, smoothstep(0.05, 0.038, sdl) * sun_disc);
+	// drifting cloud bands (overcast: they close up)
 	float cl = sin(ang * 5.0 + drift * 6.0 + up * 9.0) * 0.5 + sin(ang * 11.0 - drift * 9.0 - up * 23.0) * 0.3 + sin(ang * 23.0 + drift * 17.0 + up * 41.0) * 0.15;
-	if (up > 0.08) c = mix(c, vec3(1.0), clamp((cl - 0.45) * 2.0, 0.0, 1.0) * 0.22 * clamp((up - 0.08) * 8.0, 0.0, 1.0));
-	// sun glow
-	float sun = max(0.0, cos(ang - 0.9)) * clamp(1.0 - abs(up - 0.25) * 4.0, 0.0, 1.0);
-	c += vec3(1.0, 0.9, 0.7) * pow(sun, 24.0) * 0.35;
+	float thr = mix(0.45, -0.55, clouds);
+	if (up > 0.06) c = mix(c, cloud_col * (1.0 + lightning * 1.5), clamp((cl - thr) * 2.0, 0.0, 1.0) * mix(0.22, 0.8, clouds) * clamp((up - 0.06) * 8.0, 0.0, 1.0));
 	float m = 0.06 + 0.03 * sin(ang * 3.0) + 0.02 * sin(ang * 7.0 + 1.3) + 0.012 * sin(ang * 17.0);
 	if (up < m) c = mix(mount_col, c, 0.25);
 	float m2 = 0.035 + 0.02 * sin(ang * 5.0 + 2.0) + 0.01 * sin(ang * 13.0);
 	if (up < m2) c = mix(mount_col * 0.8, fog_col, 0.35);
 	return c;
+}
+
+// Sum of the dynamic lights at world point p (map x, y, height z) with normal n (n = 0: no normal, sprites).
+vec3 dyn_light(vec3 p, vec3 n) {
+	vec3 acc = vec3(0.0);
+	bool hn = dot(n, n) > 0.5;
+	for (int i = 0; i < 32; i++) {
+		if (i >= light_count) break;
+		vec4 L = lights[i];
+		vec3 d = L.xyz - p;
+		float r2 = dot(d, d);
+		if (r2 > L.w * L.w) continue;
+		float dist = sqrt(r2);
+		vec3 l = d / max(dist, 0.001);
+		float att = 1.0 - dist / L.w;
+		att *= att;
+		if (hn) att *= clamp(dot(n, l) * 0.9 + 0.1, 0.0, 1.0);
+		vec4 lc = light_cols[i];
+		if (lc.w > 0.0) {
+			float cs = dot(normalize(p.xy - L.xy + vec2(1e-4)), light_dirs[i]);
+			att *= smoothstep(lc.w, lc.w + 0.12, cs);
+		}
+		acc += lc.rgb * att;
+	}
+	return acc;
 }
 
 void fragment() {
@@ -244,6 +297,15 @@ void fragment() {
 		col = fog_col;
 	}
 
+	// lighting setup: time-of-day ambient (+ lightning flash, interiors keep their ceiling lights)
+	vec3 amb = mix(ambient, max(ambient, vec3(0.72, 0.7, 0.62)), indoor) + vec3(0.8, 0.85, 1.0) * lightning * 1.1;
+	float amb_l = max(0.12, dot(amb, vec3(0.3, 0.59, 0.11)));
+	vec3 hp = vec3(cam_pos + ray * thit, eye + s * thit);
+	vec3 nrm = vec3(0.0, 0.0, 1.0);
+	if (kind == 1 || kind == 5) nrm = side == 0 ? vec3(-float(stp.x), 0.0, 0.0) : vec3(0.0, -float(stp.y), 0.0);
+	else if (kind == 4) nrm = vec3(0.0, 0.0, -1.0);
+	bool veh = false;
+
 	// real 3D vehicles: drawn where nearer than the world geometry; the ground shadow only darkens
 	if (veh3d_on) {
 		ivec2 vsz = textureSize(veh3d_depth, 0);
@@ -259,6 +321,8 @@ void fragment() {
 				if (solid) {
 					col = vc.rgb;
 					depth = vdz;
+					veh = true;
+					hp = vec3(cam_pos + ray * vdz, eye + s * vdz);
 				} else {
 					col *= 1.0 - vc.a;
 				}
@@ -266,8 +330,36 @@ void fragment() {
 		}
 	}
 
+	// the vehicle layer is already lit by its own (time-of-day) lights: only the dynamic lights are added
+	if (veh) {
+		col *= vec3(1.0) + (dyn_light(hp, vec3(0.0)) * 0.5 + vec3(lightning * 0.6)) / amb_l;
+		col /= max(1.0, max(col.r, max(col.g, col.b)));   // keep the hue instead of clipping to cyan / white
+	} else if (kind != 0 && kind != 6) {
+		col *= amb + dyn_light(hp, nrm);
+		// ground warning marks (incoming mortar / air strike impacts)
+		if ((kind == 2 || kind == 3) && mark_count > 0) {
+			float mk = 0.0;
+			float pulse = 0.5 + 0.5 * sin(time * 12.0);
+			for (int i = 0; i < 16; i++) {
+				if (i >= mark_count) break;
+				vec4 m = marks[i];
+				float d = length(hp.xy - m.xy);
+				if (d > m.z + 0.15) continue;
+				float rr = m.z * (1.0 - fract(time * 1.6));
+				float ring = 1.0 - smoothstep(0.0, 0.12, abs(d - rr));
+				float edge = 1.0 - smoothstep(0.0, 0.1, abs(d - m.z));
+				float fill = (1.0 - d / max(m.z, 0.01)) * 0.3 + 0.15;
+				mk = max(mk, clamp(fill * (0.6 + 0.4 * pulse) + ring * 0.6 + edge * (0.5 + 0.5 * pulse), 0.0, 1.0) * clamp(m.w, 0.0, 1.0));
+			}
+			col = mix(col, vec3(1.0, 0.08, 0.03), mk * 0.8);
+		}
+	}
+
 	// Billboard sprites, sorted far to near on the CPU
 	float fogk = 1.0;
+	bool sraw = false;       // an opaque sprite is on top: lit after the loop at its own position
+	vec3 sp_p = vec3(0.0);
+	float semis = 0.0;
 	for (int i = 0; i < 256; i++) {
 		if (i >= sprite_count) break;
 		vec4 a = texelFetch(spr_data, ivec2(i, 0), 0);
@@ -301,16 +393,25 @@ void fragment() {
 			sc = texture(sprite_tex, (cell + clamp(vec2(u, v), 0.001, 0.999)) / atlas_grid);
 		}
 		if (b.w > 0.0) {
-			col = mix(col, sc.rgb, sc.a * b.w);
+			col = mix(col, (sraw || (fl & 4) != 0) ? sc.rgb : sc.rgb * amb, sc.a * b.w);
 			continue;
 		}
 		if (sc.a < 0.5) continue;
 		col = mix(sc.rgb, vec3(1.0, 0.95, 0.7), b.z);
 		depth = dz;
 		fogk = (fl & 4) != 0 ? 0.15 : 1.0;
+		sraw = true;
+		sp_p = vec3(a.xy, b.x + (1.0 - v) * a.w);
+		semis = (fl & 4) != 0 ? 1.0 : smoothstep(0.3, 0.55, b.z);
+		// flag 32 (not on vehicle sprites): the brightest pixels glow (lamp bulbs)
+		if ((fl & 8) == 0 && (fl & 32) != 0 && sc.r > 0.9 && sc.g > 0.85) { semis = 1.0; fogk = 0.15; }
+	}
+	if (sraw) {
+		vec3 dl = dyn_light(sp_p, vec3(0.0));
+		col *= mix(amb + dl, vec3(1.0) + dl * 0.3, semis);
 	}
 
-	vec3 fogc = mix(fog_col, vec3(0.03, 0.03, 0.04), indoor);
+	vec3 fogc = mix(fog_col, vec3(0.03, 0.03, 0.04), indoor) + vec3(0.6, 0.65, 0.8) * lightning * 0.5;
 	if (depth < 900.0) {
 		float fg = clamp(depth / fd, 0.0, 1.0);
 		col = mix(col, fogc, fg * fg * 0.95 * fogk);
@@ -319,6 +420,7 @@ void fragment() {
 	// weather particles in three parallax layers around the camera
 	if (weather >= 0 && indoor < 0.5) {
 		float ang = cam_angle + atan(sx * plen);
+		vec3 plit = min(vec3(1.0), amb * 1.15 + 0.08);   // rain / snow / dust take the scene light
 		for (int L = 0; L < 3; L++) {
 			float d = 2.2 + float(L) * 2.6;
 			if (d > depth) continue;
@@ -332,14 +434,14 @@ void fragment() {
 			float pa = 0.55;
 			if (weather == 2) {
 				q = vec2(hx + sin(time * 0.7 + fl + hz) * 0.25, hz + time * (0.55 + 0.15 * fl)) * 5.0;
-				dens = 0.22; rad = 0.14; pc = vec3(0.96, 0.97, 1.0); pa = 0.85;
+				dens = 0.22; rad = 0.14; pc = vec3(0.96, 0.97, 1.0) * plit; pa = 0.85;
 			} else if (weather == 1) {
 				q = vec2(hx - time * (1.6 + fl * 0.5), hz + sin(time * 1.3 + hx) * 0.08) * 4.0;
-				dens = 0.07; rad = 0.12; pc = vec3(0.82, 0.70, 0.50); pa = 0.45;
+				dens = 0.07; rad = 0.12; pc = vec3(0.82, 0.70, 0.50) * plit; pa = 0.45;
 			} else if (weather == 4) {
 				// rain: thin fast streaks
 				q = vec2(hx * 6.0 + hz * 0.6, (hz + time * (7.0 + fl * 1.5)) * 0.8);
-				dens = 0.12; rad = 0.0; pc = vec3(0.75, 0.8, 0.88); pa = 0.5;
+				dens = 0.12; rad = 0.0; pc = vec3(0.75, 0.8, 0.88) * min(vec3(1.0), plit * 1.3 + 0.1); pa = 0.5;
 				vec2 gi4 = floor(q);
 				vec2 gf4 = fract(q);
 				if (hash(gi4 + fl * 11.1) < min(0.9, dens * weather_amt) && abs(gf4.x - hash(gi4 + 2.3) * 0.8 - 0.1) < 0.035 && gf4.y < 0.45)
@@ -351,6 +453,7 @@ void fragment() {
 			} else {
 				q = vec2(hx + time * 0.25, hz + sin(time * 0.8 + hx * 0.5) * 0.15 - time * 0.05) * 3.0;
 				dens = 0.03; rad = 0.1; pc = vec3(0.98, 0.97, 0.8); pa = 0.6;
+				if (stars > 0.5) { pc = vec3(0.7, 1.0, 0.35); pa = 0.5 + 0.5 * sin(time * 2.0 + hx * 3.0); }   // fireflies at night
 			}
 			vec2 gi = floor(q);
 			vec2 gf = fract(q);
@@ -361,7 +464,7 @@ void fragment() {
 		}
 	}
 
-	col += vec3(0.75, 0.8, 0.95) * lightning * (depth > 900.0 ? 1.0 : 0.45);
+	col += vec3(0.75, 0.8, 0.95) * lightning * (depth > 900.0 ? 0.7 : 0.1);
 	float vig = length(UV - 0.5);
 	col *= 1.0 - vig * vig * 0.5;
 	col = mix(col, vec3(0.75, 0.0, 0.0), clamp(hurt, 0.0, 1.0) * (0.15 + vig * 0.9));

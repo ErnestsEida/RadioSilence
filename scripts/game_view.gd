@@ -5,10 +5,12 @@ const Defs = preload("res://scripts/defs.gd")
 const Gfx = preload("res://scripts/gfx.gd")
 const MapData = preload("res://scripts/map_data.gd")
 const ViewModel = preload("res://scripts/viewmodel.gd")
+const WeaponIcons = preload("res://scripts/weapon_icons.gd")
 const VehicleView = preload("res://scripts/vehicle_view.gd")
 const VModels = preload("res://scripts/vehicle_models.gd")
 const MortarView = preload("res://scripts/mortar_view.gd")
 const VehicleLayer = preload("res://scripts/vehicle_layer.gd")
+const Atmos = preload("res://scripts/atmos.gd")
 const VEH_SCALE := 2.4
 const VEH_ZOFF := -0.1125   # the baked frames put the ground 6 px above the bottom edge
 const MAX_SPRITES := 200
@@ -56,6 +58,13 @@ var sprint_t := 0.0
 var eye := 0.6
 var cam_pitch := 0.0
 var last_vscale := 1.0
+var bold: FontVariation
+# camera of the last rendered frame, for projecting world points (name tags) onto the HUD
+var pj_yaw := 0.0
+var pj_plen := 1.0
+var pj_vscale := 1.0
+var pj_horizon := 0.5
+var pj_eye := 0.6
 var vv = null
 var vv_type := -1
 var vv_team := -1
@@ -84,6 +93,14 @@ var fog_t := 0.0
 var spotted := {}
 var spot_t := 0.0
 var mview = null   # top-down mortar view (mortar_view.gd), shown instead of the raycaster while manning
+var atm: Dictionary = {}          # weather x time-of-day look (atmos.gd)
+var dyn_lights: Array = []        # this frame's lights: [dist2, Vector4(x, y, z, radius), Vector4(r, g, b, spot cos), Vector2 dir]
+var ground_marks: Array = []      # Vector4(x, y, radius, intensity) set by set_ground_marks()
+var own_marks: Array = []         # from the air strike event (bombs about to land)
+var flash_seed := 0.0
+var thunder_snd := -1.0
+var lamp_k := 0.0                 # lamp posts lit (dusk / night / bad weather)
+var fx_test := ""                 # debug screenshots: --fxtest=marks / --fxtest=lightning
 
 
 func setup(p_res: Dictionary, p_lp, p_map, shrink: int) -> void:
@@ -91,6 +108,9 @@ func setup(p_res: Dictionary, p_lp, p_map, shrink: int) -> void:
 	lp = p_lp
 	mapdata = p_map
 	font = ThemeDB.fallback_font
+	bold = FontVariation.new()
+	bold.base_font = font
+	bold.variation_embolden = 0.9
 	clip_contents = true
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	svc = SubViewportContainer.new()
@@ -135,6 +155,14 @@ func setup(p_res: Dictionary, p_lp, p_map, shrink: int) -> void:
 	mat.set_shader_parameter("sprite_tex", res.sprite_tex)
 	mat.set_shader_parameter("spr_data", spr_tex)
 	mapdata.apply_shader(mat)
+	atm = Atmos.look(int(mapdata.weather), int(mapdata.tod), MapData.THEMES[mapdata.palette], mapdata.theme)
+	Atmos.apply(mat, atm)
+	lamp_k = 1.0 if bool(atm.heads) else 0.0
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("--fxtest="):
+			fx_test = a.substr(9)
+	if vlayer != null:
+		vlayer.set_atmos(atm)
 	if res.get("veh_tex") != null:
 		mat.set_shader_parameter("veh_tex", res.veh_tex)
 	var tcs := PackedVector3Array()
@@ -248,6 +276,11 @@ func render(p_snap: Dictionary, rec: Dictionary, effects: Array, dt: float) -> v
 	mat.set_shader_parameter("vscale", vscale)
 	mat.set_shader_parameter("bob", bob)
 	mat.set_shader_parameter("look", tan(cam_pitch) * vscale)
+	pj_yaw = yaw
+	pj_plen = plen
+	pj_vscale = vscale
+	pj_horizon = 0.5 + bob + tan(cam_pitch) * vscale
+	pj_eye = eye
 	mat.set_shader_parameter("time", time)
 	mat.set_shader_parameter("eye", eye)
 	mat.set_shader_parameter("hurt", hurt * 0.6)
@@ -260,6 +293,7 @@ func render(p_snap: Dictionary, rec: Dictionary, effects: Array, dt: float) -> v
 	if vlayer != null:
 		vlayer.begin()
 	_build_sprites(effects, plen)
+	_upload_lights()
 	if vlayer != null:
 		mat.set_shader_parameter("veh3d_on", vlayer.finish(sv.size, cam_pos, yaw, plen, bob, tan(cam_pitch) * vscale, eye, time, dt))
 	_update_fog(dt)
@@ -307,25 +341,47 @@ func _evt_on(k: int) -> bool:
 func _event_fx(dt: float) -> void:
 	storm_k = move_toward(storm_k, 1.0 if _evt_on(Defs.EVT_STORM) else 0.0, dt * 0.35)
 	var th: Array = MapData.THEMES[mapdata.palette]
-	var fc: Color = th[6]
+	# match weather / time of day (atmos.gd) with the storm event layered on top
+	var fc: Color = atm.fog_col
 	if mapdata.theme != 1:
 		fc = fc.darkened(0.4 * storm_k)
 	mat.set_shader_parameter("fog_col", Vector3(fc.r, fc.g, fc.b))
-	mat.set_shader_parameter("fog_dist", float(th[9]) * lerpf(1.0, 0.32, storm_k))
-	var wt: int = mapdata.theme
-	if storm_k > 0.3 and wt == 0:
+	mat.set_shader_parameter("fog_dist", float(th[9]) * float(atm.fog_k) * lerpf(1.0, 0.45 if float(atm.fog_k) < 0.6 else 0.32, storm_k))
+	var wt: int = atm.particles
+	if storm_k > 0.3 and (wt == 0 or (wt == -1 and mapdata.theme == 0)):
 		wt = 4   # rain
+	elif storm_k > 0.3 and wt == -1:
+		wt = mapdata.theme
 	mat.set_shader_parameter("weather", wt)
-	mat.set_shader_parameter("weather_amt", 1.0 + storm_k * 3.5)
-	lightning = maxf(0.0, lightning - dt * 3.0)
-	if storm_k > 0.6 and (mapdata.theme == 0 or mapdata.theme == 3):
+	mat.set_shader_parameter("weather_amt", maxf(float(atm.particle_amt), 1.0 + storm_k * 3.5))
+	lightning = maxf(0.0, lightning - dt * 2.6)
+	var stormy: bool = bool(atm.lightning) or (storm_k > 0.6 and (mapdata.theme == 0 or mapdata.theme == 3))
+	if stormy:
 		thunder_t -= dt
 		if thunder_t <= 0.0:
-			thunder_t = randf_range(5.0, 12.0)
+			thunder_t = randf_range(4.0, 13.0)
 			lightning = 1.0
-			if lp.view_index == 0:
-				Sfx.play("thunder", -6.0, randf_range(0.7, 1.0))
-	mat.set_shader_parameter("lightning", lightning * (0.5 + 0.5 * sin(time * 60.0)))
+			flash_seed = randf() * 100.0
+			thunder_snd = randf_range(0.15, 1.6)   # thunder follows the flash
+		if flash_seed > 0.0 and lightning < 0.55 and lightning > 0.5 and randf() < 0.5:
+			lightning = 0.9   # a second stroke
+			flash_seed = -1.0
+	if thunder_snd > 0.0:
+		thunder_snd -= dt
+		if thunder_snd <= 0.0 and lp.view_index == 0:
+			Sfx.play("thunder", -4.0, randf_range(0.6, 1.0))
+	if fx_test == "lightning":
+		lightning = 0.8
+	var flick := 0.55 + 0.45 * sin(time * 47.0 + absf(flash_seed)) * sin(time * 23.0)
+	if fx_test == "lightning":
+		flick = 1.0
+	# the first-person weapon / cockpit layer takes the scene light too
+	var am: Vector3 = atm.ambient
+	var wl := Color(am.x, am.y, am.z).lerp(Color.WHITE, lerpf(0.3, 1.0, indoor_k)) + Color(0.6, 0.6, 0.7) * lightning * flick
+	if lp.kick > 0.8:
+		wl = wl.lerp(Color.WHITE, 0.5)
+	wlayer.modulate = Color(minf(wl.r, 1.0), minf(wl.g, 1.0), minf(wl.b, 1.0), 1.0)
+	mat.set_shader_parameter("lightning", lightning * flick)
 	var ev := _evt()
 	if not ev.is_empty() and int(ev.k) == Defs.EVT_SUPPLY and puffs.size() < 240:
 		flare_t -= dt
@@ -334,6 +390,100 @@ func _event_fx(dt: float) -> void:
 			var fp := Vector2(ev.x, ev.y)
 			if fp.distance_squared_to(cam_pos) < 1600.0:
 				puffs.append({"p": fp + Vector2(randf_range(-0.1, 0.1), randf_range(-0.1, 0.1)), "z": 0.1, "t": 0.0, "life": randf_range(3.0, 4.5), "k": 0})
+
+
+## Ground warning marks for the raycast view (red pulsing ring + fill on floors and block tops).
+## marks: Array of Vector4(x, y, radius, intensity 0..1), at most 16 (shared with the air strike marks).
+## Kept until replaced: call it every frame while impacts are incoming, pass [] to clear.
+func set_ground_marks(marks: Array) -> void:
+	ground_marks = marks.duplicate()
+
+
+func _flicker(seed_v: float) -> float:
+	return 0.78 + 0.14 * sin(time * 13.0 + seed_v * 1.7) + 0.08 * sin(time * 31.0 + seed_v * 5.3)
+
+
+func _add_light(p: Vector2, z: float, radius: float, c: Color, energy: float, spot_cos := 0.0, sdir := Vector2.ZERO) -> void:
+	var d2 := cam_pos.distance_squared_to(p)
+	var reach := radius + float(atm.get("fog_k", 1.0)) * 34.0
+	if d2 > reach * reach:
+		return
+	dyn_lights.append([d2, Vector4(p.x, p.y, z, radius), Vector4(c.r * energy, c.g * energy, c.b * energy, spot_cos), sdir])
+
+
+## Headlight cone in front of a vehicle plus a small glow on its nose.
+func _add_headlights(pos: Vector2, hull: float, vt: int) -> void:
+	var f := Vector2.from_angle(hull)
+	var nose := pos + f * (1.15 if (vt == 0 or vt == 4) else 1.0)
+	_add_light(nose, 0.55, 14.0, Color(1.0, 0.93, 0.76), 2.6, 0.87, f)
+	_add_light(nose + f * 0.4, 0.5, 2.2, Color(1.0, 0.93, 0.76), 0.9)
+
+
+## Fires, lamp posts and the air strike warning marks; uploads all dynamic lights to the shader.
+func _upload_lights() -> void:
+	for em in mapdata.emitters:
+		if int(em[3]) == 1:
+			var ep := Vector2(em[0], em[1])
+			_add_light(ep, float(em[2]) + 0.35, 5.5, Color(1.0, 0.55, 0.2), 1.7 * _flicker(ep.x + ep.y * 3.0))
+	if lamp_k > 0.0:
+		var storm: bool = bool(atm.lightning) or storm_k > 0.6
+		for l in mapdata.lamps:
+			var lpos := Vector2(l[0], l[1])
+			var e := 1.5
+			if storm:
+				# storm-battered lamps: flicker and the odd drop-out
+				var ph := lpos.x * 0.37 + lpos.y * 0.71
+				e *= 0.75 + 0.25 * sin(time * 19.0 + ph)
+				if sin(time * 1.3 + ph * 4.0) > 0.93:
+					e *= 0.15
+			_add_light(lpos, float(l[2]), 8.5, Color(1.0, 0.86, 0.6), e)
+	if lp.kick > 0.8 and _role() == Defs.ROLE_FOOT and int(me.w) != Defs.W_KNIFE:
+		_add_light(cam_pos + Vector2.from_angle(cam_yaw) * 0.6, eye, 4.5, Color(1.0, 0.75, 0.4), 1.4)
+	dyn_lights.sort_custom(func(a, b): return float(a[0]) < float(b[0]))
+	var n := mini(dyn_lights.size(), Atmos.MAX_LIGHTS)
+	var lpos4 := PackedVector4Array()
+	var lcol4 := PackedVector4Array()
+	var ldir := PackedVector2Array()
+	lpos4.resize(Atmos.MAX_LIGHTS)
+	lcol4.resize(Atmos.MAX_LIGHTS)
+	ldir.resize(Atmos.MAX_LIGHTS)
+	for i in n:
+		var L: Array = dyn_lights[i]
+		lpos4[i] = L[1]
+		lcol4[i] = L[2]
+		ldir[i] = L[3]
+	mat.set_shader_parameter("light_count", n)
+	mat.set_shader_parameter("lights", lpos4)
+	mat.set_shader_parameter("light_cols", lcol4)
+	mat.set_shader_parameter("light_dirs", ldir)
+	# warning marks: the lead dev's set_ground_marks() + air strike bombs landing within 0.5 s
+	own_marks.clear()
+	if fx_test == "marks":
+		var mp := cam_pos + Vector2.from_angle(cam_yaw) * 6.0
+		own_marks.append(Vector4(mp.x, mp.y, 2.5, 1.0))
+	var ev := _evt()
+	if not ev.is_empty():
+		var now: float = snap.get("t", 0.0)
+		for bm in ev.get("bombs", []):
+			var left: float = float(bm[2]) - now
+			if left < 0.5 and left > -0.05:
+				own_marks.append(Vector4(float(bm[0]), float(bm[1]), 2.5, clampf(1.0 - left, 0.5, 1.0)))
+	# mortar shells: their exact impact spot glows red 0.5 s before they land (everyone sees it)
+	var msnap: Dictionary = snap.get("mortar", {})
+	for sh in msnap.get("s", []):
+		var sa: Array = sh
+		if sa.size() > 8 and float(sa[5]) < 0.5:
+			own_marks.append(Vector4(float(sa[7]), float(sa[8]), float(msnap.get("spl", 2.6)), clampf(1.0 - float(sa[5]), 0.5, 1.0)))
+	var mk := PackedVector4Array()
+	mk.resize(Atmos.MAX_MARKS)
+	var m := 0
+	for src in [ground_marks, own_marks]:
+		for v in src:
+			if m < Atmos.MAX_MARKS and v is Vector4:
+				mk[m] = v
+				m += 1
+	mat.set_shader_parameter("mark_count", m)
+	mat.set_shader_parameter("marks", mk)
 
 
 func _init_birds() -> void:
@@ -424,6 +574,146 @@ func _team_state(team: int) -> Dictionary:
 	return ts.get(team, {})
 
 
+## Game mode of the match (Defs.MODE_*).
+func _gmode() -> int:
+	return clampi(int(snap.get("mode", 0)), 0, Defs.MODE_NAMES.size() - 1)
+
+
+## CTF flag of a team from the snapshot: [team, x, y, state, carrier pid, return timer] (empty if none).
+func _flag_info(team: int) -> Array:
+	for f in snap.get("flags", []):
+		if int(f[0]) == team:
+			return f
+	return []
+
+
+func _flag_carrier(team: int) -> int:
+	var f := _flag_info(team)
+	return int(f[4]) if f.size() > 4 and int(f[3]) == 1 else -1
+
+
+## Game log (kill feed + messages): small lines on a dark strip, the local player's name in bold yellow.
+func _draw_log(s: Vector2, fs: int) -> void:
+	var t: float = snap.get("t", 0.0)
+	var lfs := int(clampf(float(fs) * 0.62 * Settings.log_size, 9.0, 40.0))
+	var my_name: String = str(me.get("name", ""))
+	var y := s.y * 0.23
+	for m in snap.get("msg", []):
+		var age: float = t - float(m[1])
+		if age >= 6.0:
+			continue
+		var a := clampf(6.0 - age, 0.0, 1.0)
+		var text := str(m[0])
+		# split into [segment, is_me] pieces
+		var segs: Array = []
+		var rest := text
+		if my_name.length() >= 2:
+			var i := rest.find(my_name)
+			while i >= 0:
+				if i > 0:
+					segs.append([rest.substr(0, i), false])
+				segs.append([my_name, true])
+				rest = rest.substr(i + my_name.length())
+				i = rest.find(my_name)
+		if rest != "":
+			segs.append([rest, false])
+		var w := 0.0
+		for sg in segs:
+			w += (bold if sg[1] else font).get_string_size(str(sg[0]), HORIZONTAL_ALIGNMENT_LEFT, -1, lfs).x
+		var x := (s.x - w) * 0.5
+		var mine: bool = segs.size() > 1 or (segs.size() == 1 and bool(segs[0][1]))
+		hud.draw_rect(Rect2(x - 8, y - lfs - 1, w + 16, lfs + 7), Color(0.1, 0.08, 0.0, 0.55 * a) if mine else Color(0, 0, 0, 0.42 * a))
+		for sg in segs:
+			var f: Font = bold if sg[1] else font
+			var col := Color(1.0, 0.86, 0.3, a) if sg[1] else Color(0.92, 0.92, 0.88, a)
+			hud.draw_string(f, Vector2(x + 1, y + 1), str(sg[0]), HORIZONTAL_ALIGNMENT_LEFT, -1, lfs, Color(0, 0, 0, a * 0.8))
+			hud.draw_string(f, Vector2(x, y), str(sg[0]), HORIZONTAL_ALIGNMENT_LEFT, -1, lfs, col)
+			x += f.get_string_size(str(sg[0]), HORIZONTAL_ALIGNMENT_LEFT, -1, lfs).x
+		y += lfs + 8
+
+
+## World point -> HUD pixel (z = height in world units). Returns (-1e9, ...) when behind the camera.
+func _project(pos: Vector2, z: float, s: Vector2) -> Vector3:
+	var dir := Vector2.from_angle(pj_yaw)
+	var rightv := Vector2(-dir.y, dir.x)
+	var rel := pos - cam_pos
+	var dz := rel.dot(dir)
+	if dz < 0.3:
+		return Vector3(-1e9, -1e9, dz)
+	var sx := rel.dot(rightv) / (pj_plen * dz)
+	var sy := pj_horizon + (pj_eye - z) * pj_vscale / dz
+	return Vector3((sx + 1.0) * 0.5 * s.x, sy * s.y, dz)
+
+
+## Name + health bar above every living teammate on foot (seen through walls, fades with distance).
+func _draw_nametags(s: Vector2, fs: int) -> void:
+	var my_id: int = int(me.get("id", -1))
+	var team: int = int(me.get("tm", -1))
+	var tfs := int(clampf(float(fs) * 0.6, 9.0, 30.0))
+	for row in snap.get("p", []):
+		if int(row.id) == my_id or int(row.tm) != team or float(row.hp) <= 0.0 or float(row.get("rsp", 0.0)) > 0.0:
+			continue
+		var in_veh: bool = int(row.get("tank", -1)) >= 0
+		var pos := Vector2(float(row.x), float(row.y))
+		var d := cam_pos.distance_to(pos)
+		if d > 70.0:
+			continue
+		var top: float = float(row.get("z", 0.0)) + (1.6 if in_veh else (0.62 if bool(row.get("cr", false)) else 0.9))
+		var sp := _project(pos, top, s)
+		if sp.x < -50.0 or sp.x > s.x + 50.0 or sp.y < -20.0 or sp.y > s.y:
+			continue
+		var a := clampf(1.4 - d / 60.0, 0.35, 1.0)
+		var nm := str(row.name)
+		var tw := font.get_string_size(nm, HORIZONTAL_ALIGNMENT_LEFT, -1, tfs).x
+		var bw := clampf(tw, 40.0, 140.0)
+		var tc: Color = Defs.TEAM_COLORS[team].lightened(0.45)
+		var by := sp.y - 6.0
+		hud.draw_string(font, Vector2(sp.x - tw * 0.5 + 1, by - 5), nm, HORIZONTAL_ALIGNMENT_LEFT, -1, tfs, Color(0, 0, 0, a * 0.85))
+		hud.draw_string(font, Vector2(sp.x - tw * 0.5, by - 6), nm, HORIZONTAL_ALIGNMENT_LEFT, -1, tfs, Color(tc.r, tc.g, tc.b, a))
+		var hp := clampf(float(row.hp) / 100.0, 0.0, 1.0)
+		var br := Rect2(sp.x - bw * 0.5, by, bw, maxf(4.0, tfs * 0.32))
+		hud.draw_rect(br.grow(1.0), Color(0, 0, 0, 0.7 * a))
+		var hc := Color(0.3, 0.95, 0.35) if hp > 0.6 else (Color(1.0, 0.8, 0.2) if hp > 0.3 else Color(1.0, 0.25, 0.2))
+		hud.draw_rect(Rect2(br.position, Vector2(bw * hp, br.size.y)), Color(hc.r, hc.g, hc.b, a))
+
+
+## HEIST: one chip per stolen key the team holds (whose key it is + who carries it). Any teammate can use them.
+func _draw_team_keys(pad: float, oy: float, fs: int, line: float, ts: Dictionary) -> float:
+	var kl: Array = ts.get("kl", [])
+	var kfs := fs - 5
+	var own_txt := "own key: %s" % ("carried" if me.own_key else "lost / used")
+	_txt(Vector2(pad, oy), "TEAM KEYS %d  -  shared  -  %s" % [kl.size(), own_txt], kfs, Color(1, 0.85, 0.4))
+	oy += line - 4
+	if kl.is_empty():
+		return oy + 2
+	var x := pad
+	for k in kl:
+		var kt: int = int(k[0])
+		var holder: String = "you" if int(k[2]) == int(me.id) else _pname(int(k[2]))
+		var bname: String = str(mapdata.bunker_names[int(k[1])]) if int(k[1]) >= 0 and int(k[1]) < mapdata.bunker_names.size() else "?"
+		var label := "%s (%s)" % [bname, holder]
+		var kc: Color = Defs.TEAM_COLORS[kt] if kt >= 0 and kt < Defs.TEAM_COLORS.size() else Color(0.8, 0.8, 0.75)
+		var tw := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, kfs - 1).x
+		var r := Rect2(x, oy - kfs + 2, tw + kfs + 14, kfs + 6)
+		hud.draw_rect(r, Color(0, 0, 0, 0.5))
+		hud.draw_rect(r, kc, false, 2.0)
+		# little key glyph
+		var kc2 := kc.lightened(0.3)
+		var cy := r.position.y + r.size.y * 0.5
+		hud.draw_arc(Vector2(r.position.x + 7, cy), kfs * 0.22, 0, TAU, 12, kc2, 2.0)
+		hud.draw_line(Vector2(r.position.x + 7 + kfs * 0.22, cy), Vector2(r.position.x + kfs + 4, cy), kc2, 2.0)
+		_txt(Vector2(r.position.x + kfs + 8, oy + 1), label, kfs - 1, Color(1, 1, 1, 0.95))
+		x += r.size.x + 6
+	return oy + line
+
+
+func _pname(pid: int) -> String:
+	for row in snap.get("p", []):
+		if int(row.id) == pid:
+			return str(row.name)
+	return "?"
+
+
 func _build_sprites(effects: Array, plen: float) -> void:
 	var list: Array = []
 	var dir := Vector2.from_angle(cam_yaw)
@@ -436,6 +726,8 @@ func _build_sprites(effects: Array, plen: float) -> void:
 	var anim := int(time * 6.0) % 2
 	var bobz := 0.08 + sin(time * 3.0) * 0.05
 	my_tank_moving = false
+	dyn_lights.clear()
+	var heads: bool = bool(atm.get("heads", false))
 	for i in e.size() / 9:
 		var o := i * 9
 		var typ := int(e[o])
@@ -450,7 +742,20 @@ func _build_sprites(effects: Array, plen: float) -> void:
 			my_tank_moving = (fl & 2) != 0
 			my_vtype = (fl >> 8) & 15
 			my_hull = ang
+			if heads:
+				_add_headlights(pos, ang, my_vtype)
+			if fl & 1:
+				_add_light(pos + Vector2.from_angle(cam_yaw) * 2.0, 0.8, 7.0, Color(1.0, 0.7, 0.35), 2.2)
 			continue
+		if typ == Defs.E_TANK:
+			if heads:
+				_add_headlights(pos, ang, (fl >> 8) & 15)
+			if fl & 1:
+				_add_light(pos + Vector2.from_angle(aux) * 2.0, 0.8, 7.0, Color(1.0, 0.7, 0.35), 2.0)
+		elif (typ == Defs.E_SOLDIER or typ == Defs.E_PLAYER or typ == Defs.E_TURRET) and (fl & 1) and not (fl & 4) and id != my_id:
+			_add_light(pos + Vector2.from_angle(ang) * 0.5, 0.65, 4.0, Color(1.0, 0.75, 0.4), 1.3 * randf_range(0.7, 1.0))
+		elif typ == Defs.E_WRECK:
+			_add_light(pos, 0.7, 4.5, Color(1.0, 0.5, 0.2), 0.8 * _flicker(float(id)))
 		if (typ == Defs.E_TANK or typ == Defs.E_WRECK) and vlayer != null:
 			if _visible(pos, dir, cosmax, 2.5):
 				vlayer.push(id, typ == Defs.E_WRECK, (fl >> 8) & 15, pos, ang, aux, team, fl)
@@ -490,7 +795,9 @@ func _build_sprites(effects: Array, plen: float) -> void:
 				dead_since.erase(id)
 				var f := _facing(ang, pos, right)
 				mirror = float(f.y)
-				if fl & 16:
+				if fl & 128 and not (fl & 16):
+					frame = base + Defs.SO_JUMP
+				elif fl & 16:
 					frame = base + Defs.SO_CROUCH
 				elif fl & 1:
 					frame = base + (Defs.SO_SHOOT if f.x != 1 else Defs.SO_SHOOT_SIDE)
@@ -552,6 +859,13 @@ func _build_sprites(effects: Array, plen: float) -> void:
 			frame = Defs.FR_DROP
 			scale = 0.85
 			flash = 0.15 + 0.15 * sin(time * 5.0)
+		elif typ == Defs.E_FLAG:
+			if fl == 1 and _flag_carrier(team) == int(me.get("id", -1)):
+				continue   # the flag on my own back
+			frame = Defs.FR_FLAG + clampi(team, 0, 4) * 2 + int(time * 5.0 + pos.x * 0.37) % 2
+			scale = 0.8 if fl == 1 else 1.0
+			zoff = aux + (0.45 if fl == 1 else 0.0)
+			flash = 0.2 + 0.15 * sin(time * 6.0) if fl == 2 else 0.0
 		if frame < 0:
 			continue
 		list.append([cam_pos.distance_squared_to(pos), pos.x, pos.y, frame, scale, zoff, mirror, flash, 0.0])
@@ -567,6 +881,8 @@ func _build_sprites(effects: Array, plen: float) -> void:
 			elif fr == Defs.FR_FIRE:
 				fr += int(time * 9.0 + p.y) % 2
 				fl = 4.0
+			elif fr == Atmos.FR_LAMP and lamp_k > 0.0:
+				fl = 32.0
 			list.append([cam_pos.distance_squared_to(p), p.x, p.y, fr, d[3], d[4], fl, 0.0, 0.0])
 	var ev := _evt()
 	if not ev.is_empty() and int(ev.k) == Defs.EVT_SUPPLY and not bool(ev.landed):
@@ -661,9 +977,11 @@ func _build_sprites(effects: Array, plen: float) -> void:
 			scale = lerpf(1.6, 2.4, f)
 			zoff = lerpf(-0.6, -0.2, f)
 			alpha = 0.92 * minf(1.0, (1.0 - f) * 3.0)
+		if k == 0 and age < 0.5:
+			_add_light(p, 0.8, 9.0, Color(1.0, 0.62, 0.3), 3.2 * (1.0 - age / 0.5))
 		if not _visible(p, dir, cosmax, 1.5):
 			continue
-		list.append([cam_pos.distance_squared_to(p), p.x, p.y, frame, scale, zoff, 0.0, 0.0, alpha])
+		list.append([cam_pos.distance_squared_to(p), p.x, p.y, frame, scale, zoff, 4.0 if k == 0 else 0.0, 0.0, alpha])
 	list.sort_custom(func(a, b): return a[0] > b[0])
 	if list.size() > MAX_SPRITES:
 		list = list.slice(list.size() - MAX_SPRITES)
@@ -774,6 +1092,7 @@ func _draw_vm(s: Vector2) -> void:
 		"throw": (1.0 - float(lp.throw_t) / 0.5) if lp.throw_t > 0.0 else 0.0,
 		"flash": float(lp.kick) > 0.8 and weapon != Defs.W_KNIFE,
 		"crouch": 1.0 if me.cr else 0.0,
+		"empty": int(me.mag) <= 0,
 	})
 	wlayer.draw_texture_rect(vm.get_texture(), Rect2(Vector2.ZERO, s), false)
 
@@ -972,7 +1291,7 @@ func _bar(r: Rect2, frac: float, col: Color, label: String, fs: int) -> void:
 
 
 func _key(action: String) -> String:
-	var m := {"kbm": {"use": "E", "seat": "F", "gear": "G"}, "kb2": {"use": "Num Enter", "seat": "Num +", "gear": "Num 8"}, "pad": {"use": "X", "seat": "Y", "gear": "LB"}}
+	var m := {"kbm": {"use": "E", "seat": "F", "gear": "G", "fire": "LMB"}, "kb2": {"use": "Num Enter", "seat": "Num +", "gear": "Num 8", "fire": "Num 0"}, "pad": {"use": "X", "seat": "Y", "gear": "LB", "fire": "RT"}}
 	return m.get(lp.device, m.pad)[action]
 
 
@@ -985,7 +1304,7 @@ func _arrow(c: Vector2, d: int, size: float, col: Color) -> void:
 
 func _draw_hud() -> void:
 	var s := hud.size
-	var fs := int(clampf(s.y / 42.0, 12.0, 24.0))
+	var fs := int(clampf(s.y / 42.0, 12.0, 36.0) * Settings.ui_scale)
 	if me.is_empty():
 		_txt(Vector2(0, s.y * 0.5), "Waiting for host...", fs + 6, Color.WHITE, HORIZONTAL_ALIGNMENT_CENTER, s.x)
 		return
@@ -1011,7 +1330,7 @@ func _draw_hud() -> void:
 		hud.draw_circle(c, 2.5, Color(1, 0.2, 0.2))
 
 	# crosshair
-	if role == Defs.ROLE_FOOT and me.pz == null and not (int(me.w) == Defs.W_SNIPER and ads_t > 0.85):
+	if role == Defs.ROLE_FOOT and me.pz == null and not ((int(me.w) == Defs.W_SNIPER or int(me.w) == Defs.W_DMR) and ads_t > 0.85):
 		var w := Color(1, 1, 1, 0.85 * (1.0 - ads_t * 0.7))
 		var gap := 4.0 + spread * 10.0
 		hud.draw_line(c + Vector2(-gap - 8, 0), c + Vector2(-gap, 0), w, 2)
@@ -1075,19 +1394,22 @@ func _draw_hud() -> void:
 		_txt(Vector2(0, s.y - pad - 6 - line), "[%s] exit vehicle   [%s] switch seat" % [_key("use"), _key("seat")], fs - 4, Color(0.85, 0.85, 0.85, 0.8), HORIZONTAL_ALIGNMENT_RIGHT, s.x - pad)
 	if wtxt != "":
 		_txt(Vector2(0, s.y - pad - 6), wtxt, fs + 2, Color(1, 0.9, 0.6), HORIZONTAL_ALIGNMENT_RIGHT, s.x - pad)
+		var wicon: Texture2D = WeaponIcons.weapon(int(me.w)) if role == Defs.ROLE_FOOT else null
+		if wicon != null:
+			# side view of the current weapon, left of its name
+			var ih := float(fs) * 2.2
+			var iw := ih * float(wicon.get_width()) / float(wicon.get_height())
+			var tw := font.get_string_size(wtxt, HORIZONTAL_ALIGNMENT_LEFT, -1, fs + 2).x
+			hud.draw_texture_rect(wicon, Rect2(s.x - pad - tw - iw - 10.0, s.y - pad - 6.0 - ih * 0.72, iw, ih), false, Color(1, 1, 1, 0.95))
 
+	if Settings.nametags and not MortarView.manning(me):
+		_draw_nametags(s, fs)
 	_draw_objectives(s, fs, pad, line)
 	_draw_teams(s, fs)
 	_draw_minimap(s, pad)
 	_draw_event_banner(s, fs)
 
-	var t: float = snap.get("t", 0.0)
-	var my := s.y * 0.22
-	for m in snap.get("msg", []):
-		var age: float = t - float(m[1])
-		if age < 5.0:
-			_txt(Vector2(0, my), str(m[0]), fs - 3, Color(1, 1, 1, clampf(5.0 - age, 0.0, 1.0)), HORIZONTAL_ALIGNMENT_CENTER, s.x)
-			my += line - 4
+	_draw_log(s, fs)
 
 	if me.pz != null:
 		_draw_puzzle(s, fs, me.pz)
@@ -1103,8 +1425,13 @@ func _draw_hud() -> void:
 			Defs.H_SOLVED: "Puzzle solved",
 			Defs.H_MORTAR: "[%s] Man the base mortar" % _key("use"),
 			Defs.H_MORTAR_BUSY: "Mortar in use",
+			Defs.H_FLAG_NOVEH: "Flag carriers can't use vehicles - run it home!",
 		}
 		var htxt: String = hints.get(hint, "")
+		if hint == Defs.H_HEAL:
+			for q in snap.get("p", []):
+				if int(q.id) == int(me.get("hid", -1)):
+					htxt = "[%s] Heal %s" % [_key("gear"), str(q.name)]
 		if htxt != "":
 			_txt(Vector2(0, s.y * 0.68), htxt, fs, Color(1, 1, 0.7), HORIZONTAL_ALIGNMENT_CENTER, s.x)
 		if int(me.loot) > 0:
@@ -1112,7 +1439,7 @@ func _draw_hud() -> void:
 
 	if role == Defs.ROLE_DEAD:
 		_txt(Vector2(0, s.y * 0.42), "KILLED IN ACTION", fs * 2, Color(1, 0.3, 0.3), HORIZONTAL_ALIGNMENT_CENTER, s.x)
-		_txt(Vector2(0, s.y * 0.42 + fs * 2), "Redeploying in %d...  (your key was dropped)" % int(ceilf(float(me.rsp))), fs + 2, Color.WHITE, HORIZONTAL_ALIGNMENT_CENTER, s.x)
+		_txt(Vector2(0, s.y * 0.42 + fs * 2), ("Redeploying in %d...  (your key was dropped)" if _gmode() == Defs.MODE_HEIST else "Redeploying in %d...") % int(ceilf(float(me.rsp))), fs + 2, Color.WHITE, HORIZONTAL_ALIGNMENT_CENTER, s.x)
 		_txt(Vector2(0, s.y * 0.42 + fs * 4), "Next loadout: %s / %s / %s   (change it in the pause menu)" % [Defs.WPN[lp.loadout[0]].name, Defs.WPN[lp.loadout[1]].name, Defs.EQUIP_SHORT[lp.loadout[2]]], fs - 2, Color(0.85, 0.85, 0.85), HORIZONTAL_ALIGNMENT_CENTER, s.x)
 
 	if lp.show_scores or bool(snap.get("over", false)):
@@ -1127,12 +1454,13 @@ func _draw_objectives(s: Vector2, fs: int, pad: float, line: float) -> void:
 	var bl: Array = snap.get("bunkers", [])
 	if ts.is_empty() or bl.is_empty():
 		return
+	if _gmode() != Defs.MODE_HEIST:
+		_draw_mode_objectives(fs, pad, line)
+		return
 	var oy := pad + fs
 	_txt(Vector2(pad, oy), "%s TEAM   %d PTS" % [Defs.TEAM_NAMES[team], int(ts.score)], fs, Defs.TEAM_COLORS[team].lightened(0.3))
 	oy += line
-	var own_txt := "your key: %s" % ("CARRIED" if me.own_key else "LOST / USED")
-	_txt(Vector2(pad, oy), "STOLEN KEYS: %d (you: %d)   %s" % [int(ts.keys), int(me.stolen), own_txt], fs - 5, Color(1, 0.85, 0.4))
-	oy += line
+	oy = _draw_team_keys(pad, oy, fs, line, ts)
 	# one line per bunker: owner, keys left, rooms, vault, reclaim timer
 	for b in bl.size():
 		var bs: Dictionary = bl[b]
@@ -1158,7 +1486,64 @@ func _draw_objectives(s: Vector2, fs: int, pad: float, line: float) -> void:
 			_txt(Vector2(pad, oy + 4), "THIS BUNKER IS ON ALERT", fs - 4, Color(1, 0.25, 0.2))
 
 
-const PZ_ACCENT := [Color(0.35, 1.0, 0.45), Color(0.35, 0.85, 1.0), Color(1.0, 0.75, 0.3), Color(0.95, 0.45, 1.0), Color(1.0, 0.55, 0.25)]
+## CTF: one line per flag (home / taken by X / dropped, returns in N s).  TDM: the kill race.
+func _draw_mode_objectives(fs: int, pad: float, line: float) -> void:
+	var team: int = me.tm
+	var gm := _gmode()
+	var ts: Dictionary = snap.get("teams", {})
+	var lim := int(snap.get("lim", 0))
+	var oy := pad + fs
+	var my_score := int(_team_state(team).get("score", 0))
+	var lim_txt := "" if lim > 99999 else " / %d" % lim
+	_txt(Vector2(pad, oy), "%s  -  %s TEAM   %d%s %s" % [Defs.MODE_NAMES[gm], Defs.TEAM_NAMES[team], my_score, lim_txt, Defs.MODE_UNITS[gm].to_upper()], fs, Defs.TEAM_COLORS[team].lightened(0.3))
+	oy += line
+	if gm == Defs.MODE_CTF:
+		var carrying := -1
+		for f in snap.get("flags", []):
+			if int(f[3]) == 1 and int(f[4]) == int(me.id):
+				carrying = int(f[0])
+		var own := _flag_info(team)
+		if carrying >= 0:
+			var at_home: bool = own.size() > 3 and int(own[3]) == 0
+			var txt := "YOU HAVE THE %s FLAG - bring it to your flag at your camp!" % Defs.TEAM_NAMES[carrying]
+			if not at_home:
+				txt = "YOU HAVE THE %s FLAG - your own flag must be home to score!" % Defs.TEAM_NAMES[carrying]
+			_txt(Vector2(pad, oy), txt, fs - 4, Color(1, 0.9, 0.3) if fmod(time, 1.0) < 0.7 else Color(1, 1, 1))
+			oy += line
+		var keys: Array = ts.keys()
+		keys.sort()
+		for t in keys:
+			var f := _flag_info(int(t))
+			if f.is_empty():
+				continue
+			var st := int(f[3])
+			var who: String = "YOUR flag" if int(t) == team else "%s flag" % Defs.TEAM_NAMES[int(t)]
+			var state := "at home"
+			if st == 1:
+				var cp := int(f[4])
+				state = "TAKEN by %s" % ("YOU" if cp == int(me.id) else _pname(cp))
+			elif st == 2:
+				state = "DROPPED - returns in %ds" % int(ceilf(float(f[5])))
+			var col: Color = Defs.TEAM_COLORS[int(t)].lightened(0.35)
+			if int(t) == team and st != 0:
+				col = Color(1, 0.35, 0.3) if fmod(time, 1.0) < 0.6 else Color(1, 0.8, 0.4)
+			_txt(Vector2(pad, oy), "%s: %s   (%d caps)" % [who, state, int(ts[t].score)], fs - 6, col)
+			oy += line - 6
+	else:
+		var rows: Array = []
+		for t in ts:
+			rows.append([int(ts[t].score), int(t)])
+		rows.sort_custom(func(a, b): return int(a[0]) > int(b[0]))
+		for r in rows:
+			var tt: int = r[1]
+			var mark := "  <" if tt == team else ""
+			_txt(Vector2(pad, oy), "%s  %d kills%s" % [Defs.TEAM_NAMES[tt], int(r[0]), mark], fs - 6, Defs.TEAM_COLORS[tt].lightened(0.35))
+			oy += line - 6
+		_txt(Vector2(pad, oy), "enemy kill +1, crewed vehicle +2", fs - 8, Color(0.85, 0.85, 0.8, 0.8))
+
+
+const PZ_ACCENT := [Color(0.35, 1.0, 0.45), Color(0.35, 0.85, 1.0), Color(1.0, 0.75, 0.3), Color(0.95, 0.45, 1.0), Color(1.0, 0.55, 0.25),
+	Color(0.4, 1.0, 0.85), Color(1.0, 0.4, 0.4)]
 
 
 ## CRT terminal: bezel, glowing screen, scanlines, stage pips, then the puzzle-specific display.
@@ -1199,8 +1584,10 @@ func _draw_puzzle(s: Vector2, fs: int, pz: Dictionary) -> void:
 		Defs.PZ_CODE: _pz_code(inner, fs, pz, acc)
 		Defs.PZ_TUNER: _pz_tuner(inner, fs, pz, acc)
 		Defs.PZ_DIAL: _pz_dial(inner, fs, pz, acc)
-		Defs.PZ_MEMORY: _pz_memory(inner, fs, pz, acc)
+		Defs.PZ_TIMING: _pz_timing(inner, fs, pz, acc)
 		Defs.PZ_VALVES: _pz_valves(inner, fs, pz, acc)
+		Defs.PZ_STEADY: _pz_steady(inner, fs, pz, acc)
+		Defs.PZ_PUMP: _pz_pump(inner, fs, pz, acc)
 	# footer
 	_txt(Vector2(r.position.x, r.end.y - 34), info.help, fs - 6, acc.lightened(0.4), HORIZONTAL_ALIGNMENT_CENTER, w)
 	_txt(Vector2(r.position.x, r.end.y - 12), "[%s] leave terminal   -   you cannot shoot while working!" % _key("use"), fs - 7, Color(1, 0.55, 0.45), HORIZONTAL_ALIGNMENT_CENTER, w)
@@ -1231,9 +1618,6 @@ func _cell(rect: Rect2, fill: Color, edge: Color, lw := 2.0) -> void:
 func _pz_code(inner: Rect2, fs: int, pz: Dictionary, acc: Color) -> void:
 	var seq: Array = pz.seq
 	var pos: int = pz.pos
-	var show: float = pz.show
-	var hidden := show <= 0.0
-	var previewing := show > 0.0 and show < 1e8
 	var cell := minf(72.0, (inner.size.x - 20.0) / seq.size())
 	var x0 := inner.position.x + (inner.size.x - cell * seq.size()) * 0.5
 	var y0 := inner.position.y + inner.size.y * 0.25
@@ -1243,21 +1627,12 @@ func _pz_code(inner: Rect2, fs: int, pz: Dictionary, acc: Color) -> void:
 		var cur := i == pos
 		var pulse := 0.5 + 0.5 * sin(time * 8.0)
 		_cell(cr, acc.darkened(0.55) if done else (acc.darkened(0.8).lerp(acc.darkened(0.6), pulse) if cur else Color(0.02, 0.04, 0.02)), acc if cur else acc.darkened(0.5))
-		if done or not hidden:
-			_arrow(cr.get_center(), int(seq[i]), cell * 0.26, acc.lightened(0.5) if done else (Color(1, 1, 0.6) if cur else acc))
-		else:
-			_glow_txt(cr.get_center() + Vector2(-fs * 0.3, fs * 0.4), "?", fs + 6, acc.darkened(0.2))
-	if previewing:
-		var tot := 2.0 + seq.size() * 0.35
-		_glow_txt(Vector2(inner.position.x, y0 + cell + 24), "MEMORISE THE CODE", fs, Color(1, 0.9, 0.4), HORIZONTAL_ALIGNMENT_CENTER, inner.size.x)
-		hud.draw_rect(Rect2(inner.position.x + 60, y0 + cell + 36, (inner.size.x - 120) * show / tot, 6), Color(1, 0.9, 0.4))
-	else:
-		_txt(Vector2(inner.position.x, y0 + cell + 30), "%d / %d" % [pos, seq.size()], fs - 2, acc, HORIZONTAL_ALIGNMENT_CENTER, inner.size.x)
+		_arrow(cr.get_center(), int(seq[i]), cell * 0.26, acc.lightened(0.5) if done else (Color(1, 1, 0.6) if cur else acc))
+	_txt(Vector2(inner.position.x, y0 + cell + 30), "%d / %d" % [pos, seq.size()], fs - 2, acc, HORIZONTAL_ALIGNMENT_CENTER, inner.size.x)
 
 
 func _pz_tuner(inner: Rect2, fs: int, pz: Dictionary, acc: Color) -> void:
-	var stg: int = pz.stage
-	var tol: float = [0.08, 0.065, 0.055, 0.045][mini(stg, 3)]
+	var tol: float = pz.get("tol", 0.1)
 	var bar := Rect2(inner.position.x + 10, inner.position.y + inner.size.y * 0.18, inner.size.x - 20, inner.size.y * 0.42)
 	_cell(bar, Color(0.0, 0.05, 0.08), acc.darkened(0.3))
 	for i in 11:
@@ -1318,41 +1693,8 @@ func _pz_dial(inner: Rect2, fs: int, pz: Dictionary, acc: Color) -> void:
 	_txt(Vector2(lx, inner.end.y - 4), "turning: %s" % ("RIGHT" if ld > 0 else ("LEFT" if ld < 0 else "-")), fs - 6, acc.darkened(0.2))
 
 
-func _pz_memory(inner: Rect2, fs: int, pz: Dictionary, acc: Color) -> void:
-	var seq: Array = pz.seq
-	var phase: int = pz.phase
-	var gs := minf(inner.size.y * 0.95, inner.size.x * 0.5)
-	var cell := gs / 4.0
-	var o := Vector2(inner.position.x + inner.size.x * 0.08, inner.position.y + (inner.size.y - gs) * 0.5)
-	var lit := -1
-	if phase == 0:
-		var t: float = pz.t
-		var i := int(t / 0.6)
-		if i < seq.size() and fmod(t, 0.6) < 0.45:
-			lit = int(seq[i])
-	for y in 4:
-		for x in 4:
-			var id := y * 4 + x
-			var cr := Rect2(o + Vector2(x * cell + 4, y * cell + 4), Vector2(cell - 8, cell - 8))
-			var fill := Color(0.04, 0.02, 0.05)
-			if id == lit:
-				fill = acc
-			_cell(cr, fill, acc.darkened(0.45))
-			if phase == 1 and x == int(pz.cx) and y == int(pz.cy):
-				hud.draw_rect(cr.grow(3), Color(1, 1, 0.6), false, 3.0)
-	var tx := o.x + gs + 30
-	if phase == 0:
-		_glow_txt(Vector2(tx, o.y + fs * 1.5), "WATCH...", fs + 2, Color(1, 0.9, 0.5))
-	else:
-		_glow_txt(Vector2(tx, o.y + fs * 1.5), "REPEAT", fs + 2, acc)
-	_txt(Vector2(tx, o.y + fs * 3.2), "%d / %d entered" % [int(pz.pos), seq.size()], fs - 2, acc.lightened(0.3))
-	for i in seq.size():
-		hud.draw_circle(Vector2(tx + 8 + i * 22, o.y + fs * 4.4), 7, acc if i < int(pz.pos) else acc.darkened(0.7))
-
-
 func _pz_valves(inner: Rect2, fs: int, pz: Dictionary, acc: Color) -> void:
-	var stg: int = pz.stage
-	var band: float = [0.1, 0.08, 0.065][mini(stg, 2)]
+	var band: float = pz.get("band", 0.12)
 	var gw := inner.size.x * 0.16
 	var gh := inner.size.y * 0.78
 	for i in 3:
@@ -1372,7 +1714,93 @@ func _pz_valves(inner: Rect2, fs: int, pz: Dictionary, acc: Color) -> void:
 			hud.draw_line(Vector2(gx, ty2), Vector2(gx + 8, ty2), acc.darkened(0.3), 1.0)
 		_txt(Vector2(gx, gr.end.y + fs + 2), "VALVE %d" % (i + 1), fs - 6, Color(1, 1, 0.6) if sel else acc)
 	_txt(Vector2(inner.position.x, inner.end.y + 10), "STABLE", fs - 6, acc)
-	_bar(Rect2(inner.position.x + 80, inner.end.y, inner.size.x - 90, 12), float(pz.hold) / 4.0, acc, "", fs - 6)
+	_bar(Rect2(inner.position.x + 80, inner.end.y, inner.size.x - 90, 12), float(pz.hold) / float(pz.get("need", 3.0)), acc, "", fs - 6)
+
+
+## TIMING LOCK: marker sweeping a horizontal track, green zone, hit lamps.
+func _pz_timing(inner: Rect2, fs: int, pz: Dictionary, acc: Color) -> void:
+	var track := Rect2(inner.position.x + 20, inner.position.y + inner.size.y * 0.3, inner.size.x - 40, inner.size.y * 0.24)
+	var miss: float = pz.get("miss", 0.0)
+	_cell(track, Color(0.05, 0.0, 0.06), Color(1, 0.3, 0.25) if miss > 0.0 else acc.darkened(0.3), 2.0)
+	for i in 21:
+		var gx := track.position.x + track.size.x * i / 20.0
+		hud.draw_line(Vector2(gx, track.end.y - (10.0 if i % 5 == 0 else 5.0)), Vector2(gx, track.end.y), acc.darkened(0.5), 1.0)
+	var zc: float = pz.zc
+	var zw: float = pz.zw
+	var zr := Rect2(track.position.x + (zc - zw) * track.size.x, track.position.y + 3, zw * 2.0 * track.size.x, track.size.y - 6)
+	var m: float = pz.m
+	var inside := absf(m - zc) <= zw
+	hud.draw_rect(zr, Color(0.25, 0.95, 0.4, 0.55 if inside else 0.32))
+	hud.draw_rect(zr, Color(0.4, 1.0, 0.55), false, 2.0)
+	var mx := track.position.x + m * track.size.x
+	hud.draw_rect(Rect2(mx - 3, track.position.y - 12, 6, track.size.y + 24), Color(1, 1, 0.75) if inside else Color(1, 0.85, 0.3))
+	hud.draw_circle(Vector2(mx, track.position.y - 14), 6, Color(1, 0.9, 0.4))
+	# hit lamps
+	var need: int = pz.get("need", 3)
+	var hits: int = pz.get("hits", 0)
+	var ly := track.end.y + fs + 28
+	for i in need:
+		var c := Vector2(inner.get_center().x + (i - (need - 1) * 0.5) * 46.0, ly)
+		hud.draw_circle(c, 15, acc.darkened(0.75))
+		hud.draw_circle(c, 11, Color(0.35, 1.0, 0.5) if i < hits else Color(0.06, 0.08, 0.06))
+		hud.draw_arc(c, 15, 0, TAU, 20, acc.darkened(0.3), 2.0)
+	if miss > 0.0:
+		_glow_txt(Vector2(inner.position.x, track.position.y - 22), "MISS!", fs, Color(1, 0.35, 0.3), HORIZONTAL_ALIGNMENT_CENTER, inner.size.x)
+	else:
+		_txt(Vector2(inner.position.x, track.position.y - 22), "[%s] when the marker is in the green" % _key("fire"), fs - 6, acc, HORIZONTAL_ALIGNMENT_CENTER, inner.size.x)
+
+
+## STEADY HAND: square field, wandering ring, jittery cursor with a short trail.
+func _pz_steady(inner: Rect2, fs: int, pz: Dictionary, acc: Color) -> void:
+	var side := minf(inner.size.y - 26.0, inner.size.x * 0.6)
+	var f := Rect2(inner.get_center().x - side * 0.5, inner.position.y, side, side)
+	_cell(f, Color(0.0, 0.06, 0.05), acc.darkened(0.35), 2.0)
+	for i in 1:
+		hud.draw_line(Vector2(f.get_center().x, f.position.y), Vector2(f.get_center().x, f.end.y), acc.darkened(0.75), 1.0)
+		hud.draw_line(Vector2(f.position.x, f.get_center().y), Vector2(f.end.x, f.get_center().y), acc.darkened(0.75), 1.0)
+	var to_px := func(x: float, y: float) -> Vector2:
+		return f.get_center() + Vector2(x, -y) * side * 0.5
+	var tc: Vector2 = to_px.call(float(pz.tx), float(pz.ty2))
+	var tr: float = float(pz.tr) * side * 0.5
+	var cc: Vector2 = to_px.call(float(pz.cx), float(pz.cy))
+	var inside := cc.distance_to(tc) <= tr
+	hud.draw_circle(tc, tr, Color(0.3, 1.0, 0.6, 0.18 if inside else 0.08))
+	hud.draw_arc(tc, tr, 0, TAU, 48, Color(0.4, 1.0, 0.65) if inside else acc, 3.0)
+	var shake := Vector2(randf_range(-1.5, 1.5), randf_range(-1.5, 1.5))
+	var col := Color(1, 1, 0.7) if inside else Color(1, 0.45, 0.3)
+	hud.draw_line(cc + shake + Vector2(-12, 0), cc + shake + Vector2(12, 0), col, 2.0)
+	hud.draw_line(cc + shake + Vector2(0, -12), cc + shake + Vector2(0, 12), col, 2.0)
+	hud.draw_circle(cc + shake, 4.0, col)
+	_bar(Rect2(f.position.x, f.end.y + 8, side, 10), float(pz.hold) / float(pz.get("need", 3.0)), acc, "", fs - 6)
+
+
+## PRESSURE PUMP: tall gauge with the green top band, piston arrows that flash on the side to press next.
+func _pz_pump(inner: Rect2, fs: int, pz: Dictionary, acc: Color) -> void:
+	var gw := inner.size.x * 0.14
+	var gh := inner.size.y * 0.85
+	var gr := Rect2(inner.get_center().x - gw * 0.5, inner.position.y + 4, gw, gh)
+	_cell(gr, Color(0.07, 0.01, 0.01), acc.darkened(0.3), 2.0)
+	var lo: float = pz.get("lo", 0.75)
+	var band := Rect2(gr.position.x + 2, gr.position.y + 2, gw - 4, (1.0 - lo) * gh - 2)
+	hud.draw_rect(band, Color(0.25, 0.9, 0.4, 0.3))
+	var g: float = pz.g
+	var ok := g >= lo
+	var lvl := gr.end.y - g * gh
+	hud.draw_rect(Rect2(gr.position.x + 6, lvl, gw - 12, gr.end.y - lvl - 3), (Color(0.3, 0.95, 0.45) if ok else Color(1.0, 0.35, 0.25)).darkened(0.2))
+	hud.draw_line(Vector2(gr.position.x - 8, lvl), Vector2(gr.end.x + 8, lvl), Color(1, 0.95, 0.7), 2.0)
+	for k in 9:
+		var ty2 := gr.position.y + gh * (k + 1) / 10.0
+		hud.draw_line(Vector2(gr.position.x, ty2), Vector2(gr.position.x + 8, ty2), acc.darkened(0.3), 1.0)
+	var last: int = pz.get("last", 0)
+	var asz := fs * 1.4
+	var lc := Vector2(gr.position.x - inner.size.x * 0.2, gr.get_center().y)
+	var rc := Vector2(gr.end.x + inner.size.x * 0.2, gr.get_center().y)
+	var pulse := 0.6 + 0.4 * sin(time * 14.0)
+	_arrow(lc, 3, asz, Color(1, 1, 0.6, pulse) if last != -1 else acc.darkened(0.55))
+	_arrow(rc, 1, asz, Color(1, 1, 0.6, pulse) if last != 1 else acc.darkened(0.55))
+	_txt(Vector2(lc.x - 60, lc.y + asz + fs), "LEFT", fs - 6, acc, HORIZONTAL_ALIGNMENT_CENTER, 120)
+	_txt(Vector2(rc.x - 60, rc.y + asz + fs), "RIGHT", fs - 6, acc, HORIZONTAL_ALIGNMENT_CENTER, 120)
+	_bar(Rect2(inner.position.x + 40, inner.end.y + 4, inner.size.x - 80, 12), float(pz.hold) / float(pz.get("need", 1.6)), acc, "", fs - 6)
 
 
 ## Score chips across the top with the match timer.
@@ -1396,7 +1824,7 @@ func _draw_event_banner(s: Vector2, fs: int) -> void:
 		info = "Watch the green marker and the smoke - the crate is coming down."
 	elif k == Defs.EVT_BOUNTY:
 		var bt: int = ev.team
-		info = ("YOUR team has a bounty on its head - stay alive!" if bt == int(me.tm) else "Kill %s soldiers: +%d pts each." % [Defs.TEAM_NAMES[bt], Defs.BOUNTY_VALUE]) if bt >= 0 else info
+		info = ("YOUR team has a bounty on its head - stay alive!" if bt == int(me.tm) else ("Kill %s soldiers: +%d pts each." % [Defs.TEAM_NAMES[bt], Defs.BOUNTY_VALUE] if _gmode() == Defs.MODE_HEIST else "Kills on %s count DOUBLE." % Defs.TEAM_NAMES[bt])) if bt >= 0 else info
 		col = Defs.TEAM_COLORS[bt] if bt >= 0 else col
 	if k != Defs.EVT_SUPPLY or bool(ev.landed):
 		head += "   %d s" % int(ceil(left))
@@ -1423,7 +1851,10 @@ func _draw_teams(s: Vector2, fs: int) -> void:
 		x = s.x - 14.0 - w
 		y = 14.0 + 34.0 + ms + 10.0
 	var tl: float = snap.get("tl", 0.0)
+	var gm := _gmode()
 	var timer := "%d:%02d   first to %d" % [int(tl) / 60, int(tl) % 60, int(snap.get("lim", 0))]
+	if gm != Defs.MODE_HEIST:
+		timer = "%s   %d:%02d   first to %d %s" % [Defs.MODE_NAMES[gm], int(tl) / 60, int(tl) % 60, int(snap.get("lim", 0)), Defs.MODE_UNITS[gm]]
 	if narrow:
 		_txt(Vector2(x, y - 6), timer, fs - 6, Color(1, 1, 1, 0.9))
 		y += 6
@@ -1435,7 +1866,13 @@ func _draw_teams(s: Vector2, fs: int) -> void:
 		var r := Rect2(x, y, w, fs + 10)
 		hud.draw_rect(r, Color(col.r, col.g, col.b, 0.6 if int(t) == int(me.tm) else 0.3))
 		hud.draw_rect(r, col, false, 2.0)
-		_txt(Vector2(x + 6, y + fs + 2), "%s %d  K%d" % [Defs.TEAM_NAMES[int(t)].substr(0, 3), int(info.score), int(info["keys"])], fs - 6)
+		var extra := "  K%d" % int(info["keys"])
+		if gm == Defs.MODE_TDM:
+			extra = " kills"
+		elif gm == Defs.MODE_CTF:
+			var fi := _flag_info(int(t))
+			extra = "  " + (["FLAG", "TAKEN", "DROP"][clampi(int(fi[3]), 0, 2)] if fi.size() > 3 else "")
+		_txt(Vector2(x + 6, y + fs + 2), "%s %d%s" % [Defs.TEAM_NAMES[int(t)].substr(0, 3), int(info.score), extra], fs - 6)
 		if narrow:
 			y += fs + 14
 		else:
@@ -1454,9 +1891,10 @@ func _draw_scores(s: Vector2, fs: int) -> void:
 		_txt(Vector2(r.position.x, yy), "MATCH OVER - %s TEAM WINS   (ENTER: menu)" % Defs.TEAM_NAMES[maxi(win, 0)], fs + 2, Defs.TEAM_COLORS[maxi(win, 0)].lightened(0.3), HORIZONTAL_ALIGNMENT_CENTER, r.size.x)
 		yy += fs + 14
 	var ts: Dictionary = snap.get("teams", {})
-	var line := ""
+	var gm := _gmode()
+	var line := "%s:     " % Defs.MODE_NAMES[gm]
 	for t in ts:
-		line += "%s %d     " % [Defs.TEAM_NAMES[int(t)], int(ts[t].score)]
+		line += "%s %d %s     " % [Defs.TEAM_NAMES[int(t)], int(ts[t].score), Defs.MODE_UNITS[gm]]
 	_txt(Vector2(r.position.x, yy), line, fs - 2, Color(1, 0.9, 0.6), HORIZONTAL_ALIGNMENT_CENTER, r.size.x)
 	yy += fs + 12
 	_txt(Vector2(r.position.x + 16, yy), "PLAYER", fs - 2, Color(1, 0.85, 0.4))
@@ -1525,7 +1963,7 @@ func _draw_minimap(s: Vector2, pad: float) -> void:
 		var owner: int = bs.owner
 		var rr := Rect2(o + Vector2(bk.bx, bk.by) * k, Vector2(24, 24) * k)
 		hud.draw_rect(rr, Defs.TEAM_COLORS[owner] if owner >= 0 else Color(0.8, 0.8, 0.8), false, 2.0)
-		for r in mapdata.rooms + 1:
+		for r in (mapdata.rooms + 1 if _gmode() == Defs.MODE_HEIST else 0):
 			var dc: Vector2i = bk.doors[r]
 			var p := o + Vector2(dc.x + 0.5, dc.y + 0.5) * k
 			hud.draw_rect(Rect2(p - Vector2(2.5, 2.5), Vector2(5, 5)), Color(0.3, 1, 0.4) if bs.acc[r] else Color(1, 0.8, 0.2))
@@ -1552,6 +1990,17 @@ func _draw_minimap(s: Vector2, pad: float) -> void:
 			hud.draw_rect(Rect2(p - Vector2(3, 3), Vector2(6, 6)), Color.BLACK, false, 1.0)
 		elif (typ == Defs.E_SOLDIER or typ == Defs.E_TURRET) and spotted.has(id):
 			hud.draw_circle(p, 2.5 if typ == Defs.E_SOLDIER else 3.5, Color(1, 0.15, 0.1))
+	# CTF flags (always shown - carriers too, for everyone)
+	for f in snap.get("flags", []):
+		var ft: int = int(f[0])
+		var fp: Vector2 = o + Vector2(float(f[1]), float(f[2])) * k
+		var fst: int = int(f[3])
+		var fc: Color = Defs.TEAM_COLORS[clampi(ft, 0, 3)]
+		if fst == 1:
+			var blink := 0.5 + 0.5 * sin(time * 8.0)
+			hud.draw_arc(fp, 6.0 + 2.0 * blink, 0, TAU, 16, Color(1, 1, 1, 0.5 + 0.5 * blink), 1.5)
+		hud.draw_line(fp + Vector2(-3, 5), fp + Vector2(-3, -7), Color.BLACK, 2.0)
+		hud.draw_colored_polygon(PackedVector2Array([fp + Vector2(-3, -7), fp + Vector2(5, -4), fp + Vector2(-3, -1)]), fc.lightened(0.2) if fst != 2 or fmod(time, 0.8) < 0.5 else Color(1, 1, 1))
 	if mview != null:
 		mview.minimap_marks(hud, o, k, snap, team)
 	var mp := o + cam_pos * k

@@ -68,6 +68,17 @@ const SUPPLY_VALUE := 250
 const BOUNTY_VALUE := 100
 const EV_STRIDE := 5      # type, x, y, x2, y2
 
+# ---------------------------------------------------------------- game modes
+const MODE_HEIST := 0
+const MODE_CTF := 1
+const MODE_TDM := 2
+const MODE_NAMES := ["HEIST", "CAPTURE THE FLAG", "TEAM DEATHMATCH"]
+const MODE_UNITS := ["pts", "captures", "kills"]
+const MODE_SCORES := [[1500, 2500, 4000, 999999], [3, 5, 8, 999999], [25, 40, 60, 999999]]
+const E_FLAG := 30         # team flag: fl = state (0 home, 1 carried, 2 dropped), aux = z
+const H_FLAG_NOVEH := 30   # flag carriers can't use vehicles
+const FLAG_RETURN := 25.0  # a dropped flag returns home after this long
+
 const H_ENTER := 1
 const H_KEYDOOR := 2      # need a key
 const H_UNLOCK := 3       # can unlock with a key
@@ -76,6 +87,7 @@ const H_VAULT := 5
 const H_AMMO := 6
 const H_DEPOSIT := 7
 const H_SOLVED := 8
+const H_HEAL := 30        # [gear] heal the hurt teammate in front of you (player record "hid" = their id)
 const H_MORTAR := 20      # [use] man the base mortar
 const H_MORTAR_BUSY := 21 # a teammate is already on it
 
@@ -111,9 +123,21 @@ const WPN := [
 	{"name": "SHOTGUN", "vel": 55.0, "dmg": 13.0, "cd": 0.85, "mag": 6, "reload": 2.6, "spread": 0.11, "pellets": 8, "reach": 14.0, "reserve": 30, "auto": false, "speed": 1.0, "zoom": 1.2},
 	{"name": "SNIPER", "vel": 36.0, "dmg": 85.0, "cd": 1.3, "mag": 5, "reload": 2.6, "spread": 0.004, "pellets": 1, "reach": 60.0, "reserve": 25, "auto": false, "speed": 0.93, "zoom": 3.2},
 	{"name": "LMG", "vel": 80.0, "dmg": 16.0, "cd": 0.085, "mag": 80, "reload": 4.0, "spread": 0.055, "pellets": 1, "reach": 32.0, "reserve": 160, "auto": true, "speed": 0.85, "zoom": 1.35},
+	# burst: rounds per trigger pull (burst_cd between them, cd after the burst); hip: spread when not aiming;
+	# rocket: fires a slow explosive projectile (world.gd Shell) with this splash radius instead of bullets
+	{"name": "BURST RIFLE", "vel": 88.0, "dmg": 19.0, "cd": 0.36, "mag": 30, "reload": 2.1, "spread": 0.022, "pellets": 1, "reach": 34.0, "reserve": 120, "auto": false, "speed": 1.0, "zoom": 1.6, "burst": 3, "burst_cd": 0.065},
+	{"name": "MARKSMAN RIFLE", "vel": 55.0, "dmg": 42.0, "cd": 0.34, "mag": 12, "reload": 2.4, "spread": 0.008, "pellets": 1, "reach": 50.0, "reserve": 48, "auto": false, "speed": 0.96, "zoom": 2.4, "hip": 0.045},
+	{"name": "MACHINE PISTOL", "vel": 62.0, "dmg": 10.0, "cd": 0.058, "mag": 20, "reload": 1.3, "spread": 0.07, "pellets": 1, "reach": 20.0, "reserve": 100, "auto": true, "speed": 1.06, "zoom": 1.2},
+	{"name": "DOUBLE BARREL", "vel": 55.0, "dmg": 15.0, "cd": 0.2, "mag": 2, "reload": 2.2, "spread": 0.13, "pellets": 9, "reach": 12.0, "reserve": 24, "auto": false, "speed": 1.03, "zoom": 1.15},
+	{"name": "ROCKET LAUNCHER", "vel": 19.0, "dmg": 200.0, "cd": 0.8, "mag": 1, "reload": 3.2, "spread": 0.006, "pellets": 1, "reach": 48.0, "reserve": 4, "auto": false, "speed": 0.9, "zoom": 1.4, "rocket": 1.5},
 ]
-const PRIMARIES := [W_RIFLE, W_SMG, W_SHOTGUN, W_SNIPER, W_LMG]
-const SECONDARIES := [W_PISTOL, W_REVOLVER]
+const W_BURST := 8
+const W_DMR := 9
+const W_MPISTOL := 10
+const W_DBARREL := 11
+const W_RPG := 12
+const PRIMARIES := [W_RIFLE, W_SMG, W_SHOTGUN, W_SNIPER, W_LMG, W_BURST, W_DMR, W_DBARREL, W_RPG]
+const SECONDARIES := [W_PISTOL, W_REVOLVER, W_MPISTOL]
 const EQ_FRAG := 0
 const EQ_SMOKE := 1
 const EQ_MEDKIT := 2
@@ -136,6 +160,7 @@ const SO_SHOOT_SIDE := 10
 const SO_DYING := 11
 const SO_DEAD := 12
 const SO_CROUCH := 13
+const SO_JUMP := 14
 const FR_TANK := 80
 const FR_WRECK := 96
 const FR_TURRET := 97
@@ -207,12 +232,16 @@ const FR_VEH := 150   # vehicle sprites for types 1..4: FR_VEH + (type-1)*16 + t
 const PZ_CODE := 0
 const PZ_TUNER := 1
 const PZ_DIAL := 2
-const PZ_MEMORY := 3
+const PZ_TIMING := 3
 const PZ_VALVES := 4
+const PZ_STEADY := 5
+const PZ_PUMP := 6
 const PUZZLES := [
-	{"name": "CODE LOCK", "stages": 4, "help": "Enter the arrow code. From stage 3 it vanishes after a moment - memorise it."},
-	{"name": "SIGNAL TUNER", "stages": 4, "help": "Keep the needle inside the drifting green band (left / right)."},
-	{"name": "SAFE DIAL", "stages": 3, "help": "Turn RIGHT to the 1st number, LEFT to the 2nd, RIGHT... press FIRE on each."},
-	{"name": "MEMORY GRID", "stages": 4, "help": "Watch the cells light up, then repeat: move the cursor, FIRE to select."},
-	{"name": "PRESSURE VALVES", "stages": 3, "help": "Keep all 3 gauges in the green zone. Left/right selects, up/down adjusts."},
+	{"name": "CODE LOCK", "stages": 2, "help": "Type the arrow code shown on the screen (WASD / arrows)."},
+	{"name": "SIGNAL TUNER", "stages": 2, "help": "Keep the needle inside the drifting green band (left / right)."},
+	{"name": "SAFE DIAL", "stages": 2, "help": "Turn RIGHT to the 1st number, LEFT to the 2nd... press FIRE on each."},
+	{"name": "TIMING LOCK", "stages": 3, "help": "Press FIRE while the sweeping marker is inside the green zone."},
+	{"name": "PRESSURE VALVES", "stages": 2, "help": "Keep all 3 gauges in the green zone. Left/right selects, up/down adjusts."},
+	{"name": "STEADY HAND", "stages": 2, "help": "Steer the shaking cursor (WASD) and keep it inside the moving ring."},
+	{"name": "PRESSURE PUMP", "stages": 2, "help": "Alternate LEFT / RIGHT fast to pump the gauge into the green - keep it there."},
 ]

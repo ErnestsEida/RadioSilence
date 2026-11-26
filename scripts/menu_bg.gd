@@ -3,6 +3,7 @@ extends ColorRect
 
 const MapData = preload("res://scripts/map_data.gd")
 const Defs = preload("res://scripts/defs.gd")
+const Atmos = preload("res://scripts/atmos.gd")
 const MAX_SPRITES := 160
 const SWAY := [Defs.FR_TREE, Defs.FR_PINE, Defs.FR_BUSH, Defs.FR_GRASS, Defs.FR_SNOWBUSH, Defs.FR_DRYBUSH, Defs.FR_REEDS, Defs.FR_FLOWERS, Defs.FR_DEADTREE]
 
@@ -15,6 +16,8 @@ var spr_img: Image
 var spr_tex: ImageTexture
 var spr_buf := PackedFloat32Array()
 var mini_tex: ImageTexture
+var light_pos := PackedVector4Array()
+var light_col := PackedVector4Array()
 
 
 func setup(p_res: Dictionary) -> void:
@@ -40,6 +43,13 @@ func set_map(i: int) -> void:
 	mat.set_shader_parameter("map_tex", ImageTexture.create_from_image(mapdata.pack_image()))
 	mapdata.apply_shader(mat)
 	var th: Array = MapData.THEMES[mapdata.palette]
+	# backdrop at dusk: orange / purple sky, lamps and fires lit
+	var lk := Atmos.look(Atmos.W_CLEAR, Atmos.T_DUSK, th, mapdata.theme)
+	Atmos.apply(mat, lk)
+	var fc: Color = lk.fog_col
+	mat.set_shader_parameter("fog_col", Vector3(fc.r, fc.g, fc.b))
+	mat.set_shader_parameter("fog_dist", float(th[9]) * float(lk.fog_k))
+	mat.set_shader_parameter("weather", int(lk.particles))
 	# minimap preview for the menu
 	var img := Image.create(mapdata.W, mapdata.H, false, Image.FORMAT_RGBA8)
 	for y in mapdata.H:
@@ -102,7 +112,7 @@ func _process(dt: float) -> void:
 		var fr: int = d[2]
 		if fr >= Defs.FR_FLAG and fr < Defs.FR_FLAG + 10:
 			fr += int(t * 5.0 + p.x) % 2
-		list.append([dist, p.x, p.y, fr, d[3], d[4], 2.0 if fr in SWAY else 0.0])
+		list.append([dist, p.x, p.y, fr, d[3], d[4], 2.0 if fr in SWAY else (32.0 if fr == Atmos.FR_LAMP else (4.0 if fr == Defs.FR_FIRE else 0.0))])
 	list.sort_custom(func(a, b): return a[0] > b[0])
 	if list.size() > MAX_SPRITES:
 		list = list.slice(list.size() - MAX_SPRITES)
@@ -120,3 +130,24 @@ func _process(dt: float) -> void:
 	spr_img.set_data(MAX_SPRITES, 2, false, Image.FORMAT_RGBAF, spr_buf.to_byte_array())
 	spr_tex.update(spr_img)
 	mat.set_shader_parameter("sprite_count", list.size())
+	# a few nearby lamp / fire lights (cheap: the closest 12)
+	var ls: Array = []
+	for l in mapdata.lamps:
+		var lp := Vector2(l[0], l[1])
+		if lp.distance_squared_to(cam) < 1600.0:
+			ls.append([lp.distance_squared_to(cam), Vector4(lp.x, lp.y, float(l[2]), 8.5), Vector4(1.5, 1.29, 0.9, 0.0)])
+	for e in mapdata.emitters:
+		var ep := Vector2(e[0], e[1])
+		if int(e[3]) == 1 and ep.distance_squared_to(cam) < 1600.0:
+			var fk := 1.5 + 0.25 * sin(t * 13.0 + ep.x)
+			ls.append([ep.distance_squared_to(cam), Vector4(ep.x, ep.y, float(e[2]) + 0.35, 5.5), Vector4(fk, fk * 0.55, fk * 0.2, 0.0)])
+	ls.sort_custom(func(a, b): return float(a[0]) < float(b[0]))
+	var n := mini(ls.size(), 12)
+	light_pos.resize(32)
+	light_col.resize(32)
+	for i in n:
+		light_pos[i] = ls[i][1]
+		light_col[i] = ls[i][2]
+	mat.set_shader_parameter("light_count", n)
+	mat.set_shader_parameter("lights", light_pos)
+	mat.set_shader_parameter("light_cols", light_col)

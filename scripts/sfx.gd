@@ -45,6 +45,11 @@ func _ready() -> void:
 	sounds["whistle"] = _make(_whistle(1.1))
 	sounds["thunder"] = _make(_hit(3.0, 1.1, 0.03, 30.0, 0.5, rng))
 	sounds["plane"] = _make(_plane(4.0, rng))
+	sounds["burst"] = _make(_hit(0.16, 32.0, 0.62, 240.0, 0.3, rng))
+	sounds["dmr"] = _make(_hit(0.45, 11.0, 0.75, 170.0, 0.45, rng))
+	sounds["mpistol"] = _make(_hit(0.1, 46.0, 0.72, 310.0, 0.22, rng))
+	sounds["dbarrel"] = _make(_hit(0.7, 6.5, 0.22, 65.0, 0.95, rng))
+	sounds["rpg"] = _make(_rocket(1.1, rng))
 	var wind := _make(_wind(4.0, rng))
 	wind.loop_mode = AudioStreamWAV.LOOP_FORWARD
 	wind.loop_end = wind.data.size() / 2
@@ -156,6 +161,26 @@ func _hit(dur: float, decay: float, lp: float, tone: float, tone_amt: float, rng
 		y += (rng.randf_range(-1.0, 1.0) - y) * lp
 		ph += TAU * tone * (1.0 - t * 0.4) / RATE
 		out[i] = y * exp(-t * decay) + sin(ph) * tone_amt * exp(-t * decay * 0.7)
+	return out
+
+
+## Rocket launch: a short hollow thump, then the motor's hiss fading away.
+func _rocket(dur: float, rng: RandomNumberGenerator) -> PackedFloat32Array:
+	var n := int(dur * RATE)
+	var out := PackedFloat32Array()
+	out.resize(n)
+	var lo := 0.0
+	var hi := 0.0
+	var ph := 0.0
+	for i in n:
+		var t := float(i) / RATE
+		var r := rng.randf_range(-1.0, 1.0)
+		lo += (r - lo) * 0.12
+		hi += (r - hi) * 0.55
+		ph += TAU * (70.0 - 30.0 * t) / RATE
+		var thump := (lo * 0.8 + sin(ph) * 0.9) * exp(-t * 14.0)
+		var hiss := hi * smoothstep(0.0, 0.05, t) * exp(-t * 2.6) * 0.55
+		out[i] = thump + hiss
 	return out
 
 

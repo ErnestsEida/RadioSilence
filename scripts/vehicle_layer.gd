@@ -97,6 +97,7 @@ class VInst:
 	var kick := 0.0
 	var moving := false
 	var firing := false
+	var heads: Node3D               # headlight glow (shown at dusk / night / bad weather)
 	var fresh := true
 	var seen := false
 	var last_seen := 0.0
@@ -121,6 +122,11 @@ var _time := 0.0
 var _dt := 0.016
 var _flash_mesh: SphereMesh
 var _shadow_mesh: PlaneMesh
+var _env: Environment
+var _key: DirectionalLight3D
+var _fill: DirectionalLight3D
+var _head_mat: StandardMaterial3D
+var _heads_on := false
 
 
 func _init() -> void:
@@ -158,6 +164,7 @@ func _init() -> void:
 	env.ambient_light_energy = 0.62
 	env.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
 	env.tonemap_mode = Environment.TONE_MAPPER_LINEAR
+	_env = env
 	_cam = Camera3D.new()
 	_cam.projection = Camera3D.PROJECTION_FRUSTUM
 	_cam.keep_aspect = Camera3D.KEEP_WIDTH
@@ -186,6 +193,7 @@ func _init() -> void:
 	key.layers = L_COL
 	key.transform = Transform3D(Basis.looking_at(Vector3(-0.62, -0.75, -0.42).normalized(), Vector3.UP), Vector3.ZERO)
 	_scene.add_child(key)
+	_key = key
 	var fill := DirectionalLight3D.new()
 	fill.light_color = Color(0.7, 0.8, 1.0)
 	fill.light_energy = 0.3
@@ -193,6 +201,10 @@ func _init() -> void:
 	fill.layers = L_COL
 	fill.transform = Transform3D(Basis.looking_at(Vector3(0.6, -0.25, 0.7).normalized(), Vector3.UP), Vector3.ZERO)
 	_scene.add_child(fill)
+	_fill = fill
+	_head_mat = StandardMaterial3D.new()
+	_head_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_head_mat.albedo_color = Color(1.0, 0.97, 0.82)
 
 	var dsh := Shader.new()
 	dsh.code = DEPTH_SHADER
@@ -224,6 +236,23 @@ func _init() -> void:
 
 func depth_texture() -> ViewportTexture:
 	return _dvp.get_texture()
+
+
+## Time of day / weather (atmos.gd look()): dims the sun, fill and ambient, switches the headlight glow.
+func set_atmos(lk: Dictionary) -> void:
+	var a: Vector3 = lk.get("ambient", Vector3.ONE)
+	var lum := maxf(0.05, a.x * 0.3 + a.y * 0.59 + a.z * 0.11)
+	var hue := Color(a.x / lum, a.y / lum, a.z / lum)
+	_env.ambient_light_color = Color(0.56 * hue.r, 0.58 * hue.g, 0.64 * hue.b)
+	_env.ambient_light_energy = 0.62 * lum
+	_key.light_color = Color(minf(1.0, 1.0 * hue.r), minf(1.0, 0.93 * hue.g), minf(1.0, 0.8 * hue.b))
+	_key.light_energy = 1.2 * lum
+	_fill.light_energy = 0.3 * lum
+	_heads_on = bool(lk.get("heads", false))
+	for k in _insts.keys():
+		var vi: VInst = _insts[k]
+		if vi.heads != null:
+			vi.heads.visible = _heads_on
 
 
 # ------------------------------------------------------------------ meshes ----
@@ -444,6 +473,26 @@ func _build(vt: int, wreck: bool, team: int) -> VInst:
 			fd.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			fm.add_child(fd)
 			vi.flash.visible = false
+	if not wreck:
+		# two headlamps on the nose (colour layer + depth twins so they count as solid)
+		vi.heads = Node3D.new()
+		vi.chassis.add_child(vi.heads)
+		for sgn in [-1.0, 1.0]:
+			var hm := MeshInstance3D.new()
+			hm.mesh = _flash_mesh
+			hm.material_override = _head_mat
+			hm.layers = L_COL
+			hm.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			hm.position = Vector3(ex.end.x + 0.01, ex.position.y + ex.size.y * 0.42, ex.get_center().z + float(sgn) * ex.size.z * 0.3)
+			hm.scale = Vector3(0.5, 0.9, 0.9)
+			vi.heads.add_child(hm)
+			var hd := MeshInstance3D.new()
+			hd.mesh = _flash_mesh
+			hd.material_override = _depth_mat
+			hd.layers = L_DEPTH
+			hd.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			hm.add_child(hd)
+		vi.heads.visible = _heads_on
 	_paint(vi, p)
 	return vi
 

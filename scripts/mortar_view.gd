@@ -471,6 +471,12 @@ func _draw_shells() -> void:
 		var left: float = float(sh[5])
 		var T: float = maxf(0.1, float(sh[6]))
 		var sp := _ws(a)
+		if sh.size() > 8 and left < 0.5:
+			# the exact impact spot lights up red half a second before the shell lands
+			var hp := _ws(Vector2(float(sh[7]), float(sh[8])))
+			var pk := 1.0 - left / 0.5
+			overlay.draw_circle(hp, splash * ppu, Color(1, 0.08, 0.02, 0.25 + 0.35 * pk))
+			overlay.draw_arc(hp, splash * ppu * (1.15 - 0.15 * pk), 0, TAU, 40, Color(1, 0.15, 0.05, 0.95), 3.0)
 		if st == team:
 			var k := clampf(1.0 - left / T, 0.0, 1.0)
 			overlay.draw_circle(sp, splash * ppu, Color(1.0, 0.75, 0.25, 0.08 + 0.1 * k))
@@ -540,10 +546,10 @@ func _draw_reticle(fs: int) -> void:
 func _hint_keys() -> Array:
 	var dev: String = gv.lp.device
 	if dev == "kbm":
-		return ["MOUSE / WASD", "LMB", "E", "SHIFT"]
+		return ["MOUSE / WASD", "LMB", "E", "SHIFT", "RMB"]
 	if dev == "kb2":
-		return ["ARROWS", "Num0", "Num Enter", "Num9"]
-	return ["STICKS", "RT", "X", "L3"]
+		return ["ARROWS", "Num0", "Num Enter", "Num9", "Num."]
+	return ["STICKS", "RT", "X", "L3", "LT"]
 
 
 func _draw_hud(s: Vector2, fs: int) -> void:
@@ -576,6 +582,17 @@ func _draw_hud(s: Vector2, fs: int) -> void:
 	if mine > 0:
 		fl_txt += "    next impact %.1f s" % nxt
 	_txt(Vector2(br.position.x, br.position.y + fs * 3.0), fl_txt, fs - 5, Color(1, 0.88, 0.55) if mine > 0 else Color(0.8, 0.8, 0.78), HORIZONTAL_ALIGNMENT_CENTER, bw)
+	# special: rapid-fire barrage
+	var mm: Dictionary = (md.get("m", {}) as Dictionary).get(team, {})
+	var sp: float = float(mm.get("sp", 0.0))
+	var spmax: float = maxf(1.0, float(md.get("spmax", 30.0)))
+	var sr := Rect2(br.position.x, br.position.y - fs * 2.0 - 8, bw, fs * 2.0)
+	_panel(sr, Color(1, 0.35, 0.2))
+	var sbar := Rect2(sr.position + Vector2(12, 8), Vector2(bw - 24, fs * 1.1))
+	overlay.draw_rect(sbar, Color(0, 0, 0, 0.6))
+	overlay.draw_rect(Rect2(sbar.position, Vector2(sbar.size.x * (1.0 - clampf(sp / spmax, 0.0, 1.0)), sbar.size.y)), Color(1.0, 0.3, 0.15) if sp <= 0.0 else Color(0.55, 0.25, 0.18))
+	var sp_txt := "BARRAGE IN PROGRESS" if int(mm.get("burst", 0)) > 0 else ("[%s] RAPID-FIRE BARRAGE READY" % keys[4] if sp <= 0.0 else "BARRAGE  %d s" % int(ceil(sp)))
+	_txt(sbar.position + Vector2(0, sbar.size.y - 4), sp_txt, fs - 5, Color.WHITE, HORIZONTAL_ALIGNMENT_CENTER, sbar.size.x)
 	# health + controls
 	var hp := float(me.hp)
 	var hr := Rect2(pad, s.y - pad - 22, 220, 22)
@@ -584,7 +601,7 @@ func _draw_hud(s: Vector2, fs: int) -> void:
 	overlay.draw_rect(hr, Color(1, 1, 1, 0.4), false, 1.0)
 	_txt(hr.position + Vector2(6, 17), "HP %d" % int(hp), fs - 6)
 	_txt(Vector2(pad, s.y - pad - 34), "[%s] leave mortar" % keys[2], fs - 5, Color(0.9, 0.9, 0.85, 0.9))
-	_txt(Vector2(0, s.y - pad - 6), "%s aim   %s fast   %s fire" % [keys[0], keys[3], keys[1]], fs - 6, Color(0.85, 0.85, 0.8, 0.8), HORIZONTAL_ALIGNMENT_RIGHT, s.x - pad)
+	_txt(Vector2(0, s.y - pad - 6), "%s aim   %s fast   %s fire   %s barrage" % [keys[0], keys[3], keys[1], keys[4]], fs - 6, Color(0.85, 0.85, 0.8, 0.8), HORIZONTAL_ALIGNMENT_RIGHT, s.x - pad)
 	_draw_inset(s, pad, fs)
 	# kill feed / messages
 	var t: float = float(snap.get("t", 0.0))

@@ -6,6 +6,8 @@ extends RefCounted
 ## puzzle huts, an armory hut, a barracks hut and the vault building.
 
 const Defs = preload("res://scripts/defs.gd")
+const Atmos = preload("res://scripts/atmos.gd")
+const FR_LAMP := Atmos.FR_LAMP
 
 const ROCK := 1
 const BRICK := 2
@@ -108,6 +110,8 @@ var bunker_names: Array = ["NORTH", "SOUTH", "WEST", "EAST"]
 var team_bunker: Array = [0, 1, 3, 2]   # team -> the bunker it owns
 var map_index := 0
 var rooms := 2                   # puzzle rooms per bunker (= players per team: 2 or 4)
+var with_bunkers := true         # HEIST only
+var camp_ammo: Array = []        # per team: Vector2 of the base camp's resupply crate
 var wall := PackedByteArray()
 var flo := PackedByteArray()
 var roof := PackedByteArray()
@@ -116,6 +120,9 @@ var hgt := PackedFloat32Array()   # block height of wall cells
 var rtop := PackedFloat32Array()  # roof slab top of roofed cells (slab spans CEIL .. rtop)
 var decor: Array = []           # [x, y, frame, scale, z]
 var emitters: Array = []        # [x, y, z, kind]  0 = smoke column, 1 = fire
+var lamps: Array = []           # [x, y, z] light of a lamp post / floodlight (decor frame Atmos.FR_LAMP)
+var weather := 0                # match weather + time of day from the match cfg (scripts/atmos.gd)
+var tod := 1
 var team_spawns: Array = []     # Vector3(x, y, yaw)
 var mortars: Array = []         # per team: Vector2 centre of the base camp's mortar pit
 var soldier_spawns: Array = []
@@ -416,9 +423,12 @@ func pack_image() -> Image:
 
 # ---------------------------------------------------------------- generation
 
-func generate(p_map: int, seed_val: int, p_rooms := 2) -> void:
+## p_bunkers: only HEIST uses the bunkers (keys, puzzle rooms, vaults); other modes get open terrain there.
+func generate(p_map: int, seed_val: int, p_rooms := 2, p_bunkers := true) -> void:
 	map_index = clampi(p_map, 0, MAPS.size() - 1)
 	rooms = 4 if p_rooms >= 4 else 2
+	with_bunkers = p_bunkers
+	camp_ammo.clear()
 	var info: Dictionary = MAPS[map_index]
 	W = int(info.size)
 	H = W
@@ -441,6 +451,7 @@ func generate(p_map: int, seed_val: int, p_rooms := 2) -> void:
 	rtop.fill(0.0)
 	decor.clear()
 	emitters.clear()
+	lamps.clear()
 	soldier_spawns.clear()
 	turret_spawns.clear()
 	bunkers.clear()
@@ -467,14 +478,17 @@ func generate(p_map: int, seed_val: int, p_rooms := 2) -> void:
 		for y in range(int(s.y) - 4, int(s.y) + 5):
 			for x in range(int(s.x) - 4, int(s.x) + 5):
 				flo[y * W + x] = F_CONCRETE
-		_add_decor(Vector2(s.x + 3.5, s.y - 3.5), Defs.FR_CRATE, 0.7, false)
+		camp_ammo.append(Vector2(s.x + 3.5, s.y - 3.5))   # resupply crate (drawn as an ammo crate entity)
 		_add_decor(Vector2(s.x - 3.5, s.y + 3.5), Defs.FR_BARREL, 0.65, false)
+		_add_lamp(Vector2(s.x - 4.3, s.y - 4.3))
+		_add_lamp(Vector2(s.x + 4.3, s.y + 4.3))
 		_camp_tower(ti)
 
-	for i in 4:
-		var o: Vector2i = origins[i]
-		_zones.append(Rect2i(o.x - 7, o.y - 7, 38, 38))
-		_build_bunker(o.x, o.y, i)
+	if with_bunkers:
+		for i in 4:
+			var o: Vector2i = origins[i]
+			_zones.append(Rect2i(o.x - 7, o.y - 7, 38, 38))
+			_build_bunker(o.x, o.y, i)
 	for s in team_spawns:
 		_zones.append(Rect2i(int(s.x) - 9, int(s.y) - 9, 19, 19))
 
@@ -752,6 +766,11 @@ func _build_bunker(bx: int, by: int, idx: int) -> void:
 			var y := by + 6 + r
 			var ch := line[c]
 			flo[y * W + x] = F_METAL
+			if ch == "#" and (r == 0 or r == 11) and (c == 0 or c == 11):
+				# notched corners: the yard around the vault is one connected ring, so every gate
+				# reaches every key door and the vault door (the corner huts touch these corners)
+				flo[y * W + x] = F_CONCRETE
+				continue
 			if ch == "#":
 				var outer := r == 0 or r == 11 or c == 0 or c == 11
 				_blk(x, y, TECH, 2.2 if outer else 1.9)
@@ -770,6 +789,11 @@ func _build_bunker(bx: int, by: int, idx: int) -> void:
 				_set_roof(x, y, 2.2)
 	decor.append([bx + 12.0, by + 12.0, Defs.FR_FLAG + flag_team * 2, 1.0, 1.9])
 	emitters.append([bx + 7.5, by + 7.5, 2.2, 0])
+	# lamps beside the four gates, lighting the approach
+	for lp in [Vector2(14.3, -1.5), Vector2(9.7, 25.5), Vector2(-1.5, 9.7), Vector2(25.5, 14.3)]:
+		var q: Vector2 = o + lp
+		if q.x > 3.0 and q.y > 3.0 and q.x < W - 4.0 and q.y < H - 4.0 and wall[floori(q.y) * W + floori(q.x)] == 0:
+			_add_lamp(q)
 	# doors[0 .. rooms-1] = puzzle rooms, doors[rooms] = the vault
 	b["doors"] = room_doors.slice(0, rooms) + [door_cell]
 	b["door_outside"] = room_out.slice(0, rooms) + [Vector2(door_cell.x + 0.5, door_cell.y + 1.5)]
@@ -1282,6 +1306,12 @@ func _add_decor(p: Vector2, frame: int, scale: float, solid: bool) -> void:
 	decor.append([p.x, p.y, frame, scale, 0.0])
 	if solid:
 		obst[floori(p.y) * W + floori(p.x)] = 1
+
+
+## Lamp post (sprite 2.2 tall, not solid) and its light near the top.
+func _add_lamp(p: Vector2) -> void:
+	decor.append([p.x, p.y, FR_LAMP, 2.2, 0.0])
+	lamps.append([p.x + 0.25, p.y, 2.0])
 
 
 func _scatter_decor(frame: int, count: int, solid: bool, scale: float) -> void:

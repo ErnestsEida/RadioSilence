@@ -2,6 +2,8 @@ extends Node
 ## Player options, saved to user://settings.cfg.
 
 const PATH := "user://settings.cfg"
+const KEYS := ["master", "sfx", "ambience", "sens", "pixel", "fov", "bob", "invert_y", "fullscreen", "difficulty", "show_fps",
+	"ui_scale", "log_size", "nametags", "pname"]
 
 var master := 0.8
 var sfx := 0.9
@@ -14,6 +16,10 @@ var invert_y := false
 var fullscreen := false
 var difficulty := 1
 var show_fps := false
+var ui_scale := 1.0      # menus + HUD size multiplier (menus also auto-fit the window)
+var log_size := 1.0      # game log (kill feed / messages) size multiplier
+var nametags := true
+var pname := "Player"
 
 
 func _ready() -> void:
@@ -43,7 +49,7 @@ func apply() -> void:
 
 func save_settings() -> void:
 	var cf := ConfigFile.new()
-	for k in ["master", "sfx", "ambience", "sens", "pixel", "fov", "bob", "invert_y", "fullscreen", "difficulty", "show_fps"]:
+	for k in KEYS:
 		cf.set_value("options", k, get(k))
 	cf.save(PATH)
 
@@ -52,5 +58,5 @@ func load_settings() -> void:
 	var cf := ConfigFile.new()
 	if cf.load(PATH) != OK:
 		return
-	for k in ["master", "sfx", "ambience", "sens", "pixel", "fov", "bob", "invert_y", "fullscreen", "difficulty", "show_fps"]:
+	for k in KEYS:
 		set(k, cf.get_value("options", k, get(k)))

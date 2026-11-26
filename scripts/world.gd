@@ -115,6 +115,8 @@ class Player:
 	var pz_bunker := -1
 	var pz_prev := -1
 	var ammo_cd := 0.0
+	var burst_left := 0   # rounds still to come in the current burst (burst rifle)
+	var heal_id := -1     # teammate a medkit would heal right now (H_HEAL hint)
 	var bot = null
 
 
@@ -284,10 +286,14 @@ var evt_next := 90.0
 var evt_last := -1
 var evt_count := 0
 var evt_log: Array = []
+# game mode (Defs.MODE_*): heist = keys/puzzles/vault loot, ctf = flags, tdm = kills
+var mode := 0
+var flags := {}   # ctf: team -> {"home": Vector2, "pos": Vector2, "z", "st" (0 home, 1 carried, 2 dropped), "car" (pid or -1), "t" (return timer)}
 
 
-func _init(p_map, roster: Array, seed_val: int, p_difficulty := 1, p_time := 900.0, p_score := 2500) -> void:
+func _init(p_map, roster: Array, seed_val: int, p_difficulty := 1, p_time := 900.0, p_score := 2500, p_mode := 0) -> void:
 	map = p_map
+	mode = clampi(p_mode, 0, 2)
 	difficulty = clampi(p_difficulty, 0, 2)
 	time_limit = p_time
 	score_limit = p_score
@@ -327,8 +333,23 @@ func _init(p_map, roster: Array, seed_val: int, p_difficulty := 1, p_time := 900
 			tk.team = ti
 			tk.slot = k
 			var s: Vector3 = map.team_spawns[ti]
-			var off := Vector2.from_angle(s.z + PI * 0.5) * 3.0 * float(k)
-			tk.spawn = Vector3(s.x + off.x, s.y + off.y, s.z)
+			# vehicles park side by side, alternating left/right of the first one
+			var side := float((k + 1) / 2) * (1.0 if k % 2 == 1 else -1.0)
+			var off := Vector2.from_angle(s.z + PI * 0.5) * 3.0 * side
+			var sp := Vector2(s.x + off.x, s.y + off.y)
+			if map.circle_blocked(sp, 0.7):
+				# parking spot blocked (tower, mortar pit...): take the nearest free one
+				for rr in range(1, 8):
+					var found := false
+					for a in 12:
+						var c := sp + Vector2.from_angle(a * TAU / 12.0) * float(rr)
+						if not map.circle_blocked(c, 0.7):
+							sp = c
+							found = true
+							break
+					if found:
+						break
+			tk.spawn = Vector3(sp.x, sp.y, s.z)
 			tk.vtype = rng.randi() % Defs.VEHICLES.size()
 			var idx := 0
 			for r in roster:
@@ -365,29 +386,37 @@ func _init(p_map, roster: Array, seed_val: int, p_difficulty := 1, p_time := 900
 		slots[p.team] = p.slot + 1
 		if r.get("bot", false):
 			p.bot = Bot.new()
-			p.want = [Defs.PRIMARIES[rng.randi() % Defs.PRIMARIES.size()], Defs.SECONDARIES[rng.randi() % 2], rng.randi() % 4]
+			p.want = [Defs.PRIMARIES[rng.randi() % Defs.PRIMARIES.size()], Defs.SECONDARIES[rng.randi() % Defs.SECONDARIES.size()], rng.randi() % 4]
 		elif r.has("loadout"):
 			p.want = r.loadout.duplicate()
 		players[p.id] = p
-		keys[p.id] = {"team": p.team, "owner": p.id, "bunker": TEAM_BUNKER[p.team], "holder": -1, "item": -1, "used": false}
-		_respawn(p)
-		var tk = _slot_tank(p)
-		if tk != null:
-			_enter_tank(p, tk)
+		if mode == Defs.MODE_HEIST:
+			keys[p.id] = {"team": p.team, "owner": p.id, "bunker": TEAM_BUNKER[p.team], "holder": -1, "item": -1, "used": false}
+		_respawn(p)   # everyone starts on foot at their camp; the team vehicles wait next to them
 	# bunkers nobody owns: their keys (one per room) are carried by that bunker's guards
 	var nk := -1
 	for b in map.bunkers.size():
-		if int(bstate[b].owner) < 0:
+		if int(bstate[b].owner) < 0 and mode == Defs.MODE_HEIST:
 			for k in R:
 				keys[nk] = {"team": -1, "owner": nk, "bunker": b, "holder": -1, "item": -1, "used": false}
 				nk -= 1
 	for b in map.bunkers.size():
+		if mode != Defs.MODE_HEIST:
+			break
 		for i in 6:
 			_spawn_vault_loot(b, false)
 		items.append(_loot_item(4, map.bunkers[b].vault_center, b))
 	_pick_team_targets()
 	evt_next = rng.randf_range(70.0, 110.0)
-	_msg("Each team owns a bunker. Kill enemies for their KEYS - their keys open THEIR bunker. Defend yours!")
+	if mode == Defs.MODE_CTF:
+		for t in teams:
+			var fh := _flag_home(int(t))
+			flags[int(t)] = {"home": fh, "pos": fh, "z": 0.0, "st": 0, "car": -1, "t": 0.0}
+		_msg("CAPTURE THE FLAG: steal an enemy flag and bring it to YOUR flag at your camp. Carriers can't use vehicles!")
+	elif mode == Defs.MODE_TDM:
+		_msg("TEAM DEATHMATCH: every enemy kill scores (vehicles count double). First to %d kills wins!" % score_limit)
+	else:
+		_msg("Each team owns a bunker. Kill enemies for their KEYS - their keys open THEIR bunker. Defend yours!")
 
 
 func _nid() -> int:
@@ -408,6 +437,7 @@ func remove_player(pid: int) -> void:
 	var p = players[pid]
 	if p.tank != null:
 		_exit_tank(p)
+	_flag_drop(p)
 	_drop_keys(p)
 	keys.erase(pid)
 	for it in items:
@@ -437,6 +467,8 @@ func step(dt: float) -> void:
 	_update_grenades(dt)
 	for e in enemies:
 		_update_enemy(e, dt)
+	if mode == Defs.MODE_CTF:
+		_update_flags(dt)
 	_update_world(dt)
 	_update_events(dt)
 	if int(elapsed) % 5 == 0 and int(elapsed - dt) % 5 != 0:
@@ -474,6 +506,7 @@ func snapshot() -> Dictionary:
 			if p.fire_t > 0.0: fl |= 1
 			if p.moving: fl |= 2
 			if p.crouch: fl |= 16
+			if p.air: fl |= 128
 			if p.carried > 0: fl |= 32
 			if p.keys.size() > 1: fl |= 64
 			_pack(Defs.E_PLAYER, p.pos, p.yaw, p.team, fl, p.hp / 100.0, p.z, p.id)
@@ -496,6 +529,14 @@ func snapshot() -> Dictionary:
 		for r in R:
 			_pack(Defs.E_TERMINAL, map.bunkers[b].terminals[r], 0.0, -1, 0, 1.0, float(b * 4 + r), 0)
 		_pack(Defs.E_AMMO, map.bunkers[b].ammo, 0.0, -1, 0, 1.0, 0.0, 0)
+	for t in teams:
+		if int(t) < map.camp_ammo.size():
+			_pack(Defs.E_AMMO, map.camp_ammo[int(t)], 0.0, int(t), 0, 1.0, 0.0, 0)
+	var fls: Array = []
+	for ft in flags:
+		var f: Dictionary = flags[ft]
+		_pack(Defs.E_FLAG, f.pos, 0.0, int(ft), int(f.st), 1.0, float(f.z), 0)
+		fls.append([int(ft), f.pos.x, f.pos.y, int(f.st), int(f.car), float(f.t)])
 	var pl: Array = []
 	for p in players.values():
 		var role := _role(p)
@@ -528,6 +569,7 @@ func snapshot() -> Dictionary:
 			"loot": p.carried, "eqt": p.equip, "eqn": p.eqn, "pri": p.primary, "sec": p.secondary, "pz": pz,
 			"ads": p.ads, "own_key": p.keys.has(p.id), "stolen": stolen})
 		(pl.back() as Dictionary)["mortar"] = _mortar_user(p)
+		(pl.back() as Dictionary)["hid"] = p.heal_id
 	var dyn := PackedInt32Array()
 	for g in gates:
 		for c in g.cells:
@@ -541,7 +583,7 @@ func snapshot() -> Dictionary:
 			dyn.append(map.get_wall(c.x, c.y))
 	var ts := {}
 	for t in teams:
-		ts[t] = {"score": teams[t].score, "keys": team_keys(int(t))}
+		ts[t] = {"score": teams[t].score, "keys": team_keys(int(t)), "kl": _team_key_list(int(t)) if mode == Defs.MODE_HEIST else []}
 	var bs: Array = []
 	for b in bstate.size():
 		var st: Dictionary = bstate[b]
@@ -554,7 +596,7 @@ func snapshot() -> Dictionary:
 	events = PackedFloat32Array()
 	return {"t": elapsed, "e": _ents, "p": pl, "dyn": dyn, "ev": ev, "msg": messages.duplicate(),
 		"alert": alerts.duplicate(), "teams": ts, "bunkers": bs, "tl": maxf(0.0, time_limit - elapsed), "lim": score_limit,
-		"win": winner, "over": over, "nkeys": keys.size(), "evt": evt.duplicate(), "mortar": _mortar_snap()}
+		"win": winner, "over": over, "nkeys": keys.size(), "evt": evt.duplicate(), "mortar": _mortar_snap(), "mode": mode, "flags": fls}
 
 
 # ---------------------------------------------------------------- helpers
@@ -813,10 +855,27 @@ func _respawn(p) -> void:
 	var s: Vector3 = map.team_spawns[p.team]
 	var base := Vector2(s.x, s.y)
 	p.pos = base
-	for o in [Vector2(1.6, 0), Vector2(0, 1.6), Vector2(-1.6, 0), Vector2(0, -1.6), Vector2(1.6, 1.6)]:
-		var c: Vector2 = base + o
-		if not map.circle_blocked(c, PLAYER_R):
-			p.pos = c
+	# every team member gets their own spot on a ring around the camp (no stacking on one point),
+	# on the side away from the map edge; skip spots that are blocked or already taken
+	var placed := false
+	for ring in [2.6, 3.6, 1.8]:
+		for k in 8:
+			var a: float = s.z + (float((p.slot + k) % 8) - 3.5) * 0.42
+			var c: Vector2 = base + Vector2.from_angle(a) * float(ring)
+			if map.circle_blocked(c, PLAYER_R, {}, 0.0):
+				continue
+			var taken := false
+			for q in players.values():
+				if q != p and q.alive and q.tank == null and q.pos.distance_to(c) < 0.9:
+					taken = true
+			for t in tanks:
+				if t.alive and t.pos.distance_to(c) < float(_vs(t).r) + 0.5:
+					taken = true
+			if not taken:
+				p.pos = c
+				placed = true
+				break
+		if placed:
 			break
 	p.alive = true
 	p.hp = 100.0
@@ -959,12 +1018,21 @@ func _update_player(p, dt: float) -> void:
 		_start_reload(p)
 	var wd: Dictionary = Defs.WPN[p.weapon]
 	var trigger: bool = fire if bool(wd.auto) else fire_edge
-	if trigger and p.cool <= 0.0 and p.reload <= 0.0 and not p.sprint:
+	var burst: int = int(wd.get("burst", 0))
+	if p.burst_left > 0 and (burst <= 0 or p.reload > 0.0 or p.sprint):
+		p.burst_left = 0
+	if p.burst_left > 0:
+		if p.cool <= 0.0:
+			p.burst_left -= 1
+			_fire_weapon(p)
+	elif trigger and p.cool <= 0.0 and p.reload <= 0.0 and not p.sprint:
+		p.burst_left = maxi(0, burst - 1)
 		_fire_weapon(p)
 	if throw_pressed:
 		_use_equipment(p)
 	_pickups(p)
 	_interact(p, use_pressed)
+	_heal_hint(p)
 
 
 ## Gravity, stepping up/down stairs and ledges, ceilings and fall damage.
@@ -1048,15 +1116,18 @@ func _fire_weapon(p) -> void:
 		_melee(p)
 		return
 	if int(p.mags.get(p.weapon, 0)) <= 0:
+		p.burst_left = 0
 		_start_reload(p)
 		return
 	p.mags[p.weapon] = int(p.mags[p.weapon]) - 1
-	p.cool = float(wd.cd)
+	p.cool = float(wd.burst_cd) if p.burst_left > 0 else float(wd.cd)
 	p.shots += 1
 	p.fire_t = 0.08
 	var spread: float = float(wd.spread)
 	if p.weapon == Defs.W_SNIPER and not p.ads:
 		spread = 0.07
+	elif wd.has("hip") and not p.ads:
+		spread = float(wd.hip)
 	if p.moving:
 		spread *= 1.6
 	if p.crouch:
@@ -1069,9 +1140,32 @@ func _fire_weapon(p) -> void:
 	var pitch: float = p.pitch
 	if p.inp.size() > I_AUTO and bool(p.inp[I_AUTO]):
 		pitch = _auto_pitch(p, pitch, ez, float(wd.reach))
+	if wd.has("rocket"):
+		_fire_rocket(p, wd, spread, ez, pitch)
+		return
 	for i in int(wd.pellets):
 		var sl := tan(clampf(pitch + rng.randfn(0.0, spread * 0.5), -1.3, 1.3))
 		_spawn_bullet(p.pos, p.yaw + rng.randfn(0.0, spread * 0.6), float(wd.vel), float(wd.reach), float(wd.dmg), p.team, p, ez, sl)
+	_ev(Defs.EV_SHOT, p.pos, Vector2(p.weapon, 0))
+	if int(p.mags[p.weapon]) <= 0:
+		_start_reload(p)
+
+
+## Rocket launcher: a slow explosive projectile on the vehicle-shell path (_update_shells/_explode),
+## full damage to vehicles and gates.
+func _fire_rocket(p, wd: Dictionary, spread: float, ez: float, pitch: float) -> void:
+	var d := Vector2.from_angle(p.yaw + rng.randfn(0.0, spread * 0.6))
+	var s := Shell.new()
+	s.pos = p.pos + d * 0.3
+	s.vel = d * float(wd.vel)
+	s.team = p.team
+	s.owner = p
+	s.dmg = float(wd.dmg)
+	s.splash = float(wd.rocket)
+	s.life = float(wd.reach) / float(wd.vel)
+	s.z = ez
+	s.slope = tan(clampf(pitch + rng.randfn(0.0, spread * 0.5), -1.2, 1.2))
+	shells.append(s)
 	_ev(Defs.EV_SHOT, p.pos, Vector2(p.weapon, 0))
 	if int(p.mags[p.weapon]) <= 0:
 		_start_reload(p)
@@ -1162,6 +1256,14 @@ func _use_equipment(p) -> void:
 	if p.eqn <= 0:
 		return
 	if p.equip == Defs.EQ_MEDKIT:
+		var mate = _heal_target(p)
+		if mate != null:
+			mate.hp = minf(100.0, mate.hp + 50.0)
+			p.eqn -= 1
+			p.cool = maxf(p.cool, 0.4)
+			_ev(Defs.EV_HEAL, mate.pos, Vector2(1.0, 0.0))
+			_msg("%s healed %s" % [p.name, mate.name])
+			return
 		if p.hp >= 100.0:
 			return
 		p.hp = minf(100.0, p.hp + 50.0)
@@ -1187,6 +1289,41 @@ func _use_equipment(p) -> void:
 	grenades.append(g)
 	p.cool = maxf(p.cool, 0.4)
 	_ev(Defs.EV_THROW, p.pos)
+
+
+const HEAL_REACH := 2.2
+
+## The hurt teammate on foot a medkit would heal: within HEAL_REACH, roughly in the crosshair, in sight.
+func _heal_target(p):
+	var best = null
+	var bd := HEAL_REACH + PLAYER_R
+	var f := Vector2.from_angle(p.yaw)
+	for q in players.values():
+		if q == p or q.team != p.team or not q.alive or q.tank != null or q.hp >= 100.0:
+			continue
+		var to: Vector2 = q.pos - p.pos
+		var d := to.length()
+		if d > bd or absf(q.z - p.z) > 1.0:
+			continue
+		var lat := absf(to.dot(Vector2(-f.y, f.x)))
+		if (d > 0.3 and to.dot(f) <= 0.0) or lat > PLAYER_R + 0.35:
+			continue
+		if not map.los3(p.pos, _eye_z(p), q.pos, _chest_z(q), _pass(p.team)):
+			continue
+		best = q
+		bd = d
+	return best
+
+
+func _heal_hint(p) -> void:
+	p.heal_id = -1
+	if p.equip != Defs.EQ_MEDKIT or p.eqn <= 0:
+		return
+	var mate = _heal_target(p)
+	if mate != null:
+		p.heal_id = mate.id
+		if p.hint == 0:
+			p.hint = Defs.H_HEAL
 
 
 func _melee(p) -> void:
@@ -1257,6 +1394,7 @@ func _kill_enemy(e, killer) -> void:
 
 
 func _kill_player(p, killer) -> void:
+	_flag_drop(p)
 	p.alive = false
 	p.hp = 0.0
 	p.respawn = PLAYER_RESPAWN
@@ -1274,10 +1412,13 @@ func _kill_player(p, killer) -> void:
 		kmsg = " - %d key%s dropped!" % [dropped, "" if dropped == 1 else "s"]
 	if killer != null and killer.ttype == 1 and killer != p:
 		killer.kills += 1
-		if evt_active(Defs.EVT_BOUNTY) and p.team == int(evt.team) and killer.team != p.team:
-			teams[killer.team].score += Defs.BOUNTY_VALUE
-			_ev(Defs.EV_DEPOSIT, killer.pos, Vector2(Defs.BOUNTY_VALUE, killer.team))
-			_msg("BOUNTY collected by %s: +%d for %s" % [killer.name, Defs.BOUNTY_VALUE, Defs.TEAM_NAMES[killer.team]])
+		if mode == Defs.MODE_TDM and killer.team != p.team and teams.has(killer.team):
+			teams[killer.team].score += 1
+		if evt_active(Defs.EVT_BOUNTY) and p.team == int(evt.team) and killer.team != p.team and mode != Defs.MODE_CTF:
+			var bv: int = Defs.BOUNTY_VALUE if mode == Defs.MODE_HEIST else 1
+			teams[killer.team].score += bv
+			_ev(Defs.EV_DEPOSIT, killer.pos, Vector2(bv, killer.team))
+			_msg("BOUNTY collected by %s: +%d for %s" % [killer.name, bv, Defs.TEAM_NAMES[killer.team]])
 		_msg("%s [%s] killed %s [%s]%s" % [killer.name, Defs.TEAM_NAMES[killer.team], p.name, Defs.TEAM_NAMES[p.team], kmsg])
 	else:
 		_msg("%s [%s] was killed%s" % [p.name, Defs.TEAM_NAMES[p.team], kmsg])
@@ -1329,12 +1470,40 @@ func _stolen_key(p, b := -1) -> int:
 	return -99999
 
 
+## Like _stolen_key, but also any key a living teammate carries: keys are shared by the whole team.
+func _team_key(p, b := -1) -> int:
+	var kid := _stolen_key(p, b)
+	if kid != -99999:
+		return kid
+	for q in players.values():
+		if q != p and q.team == p.team and q.alive:
+			kid = _stolen_key(q, b)
+			if kid != -99999:
+				return kid
+	return -99999
+
+
+## The team's stolen keys for the HUD: [key team, bunker, holder id] each.
+func _team_key_list(team: int) -> Array:
+	var out: Array = []
+	for q in players.values():
+		if q.team == team:
+			for k in q.keys:
+				var kd: Dictionary = keys[k]
+				if int(kd.team) != team:
+					out.append([int(kd.team), int(kd.bunker), int(q.id)])
+	return out
+
+
 func _interact(p, pressed: bool) -> void:
 	p.hint = 0
 	p.progress = 0.0
 	var ts: Dictionary = teams[p.team]
 	for t in tanks:
 		if t.alive and t.team == p.team and p.pos.distance_to(t.pos) < _radius(t) + 0.9 and (t.driver == null or t.gunner == null):
+			if _flag_of(p) >= 0:
+				p.hint = Defs.H_FLAG_NOVEH
+				continue
 			p.hint = Defs.H_ENTER
 			if pressed:
 				_enter_tank(p, t)
@@ -1349,6 +1518,13 @@ func _interact(p, pressed: bool) -> void:
 			_deposit(p)
 	if _mortar_interact(p, pressed):
 		return
+	# the resupply crate at your own base camp (every mode)
+	if int(p.team) < map.camp_ammo.size() and p.pos.distance_to(map.camp_ammo[p.team]) < 1.4:
+		p.hint = Defs.H_AMMO
+		if pressed and p.ammo_cd <= 0.0:
+			_refill(p)
+			p.ammo_cd = 20.0
+			_ev(Defs.EV_PICKUP, map.camp_ammo[p.team], Vector2(2, 0))
 	var b := _near_bunker(p.pos)
 	if b < 0:
 		return
@@ -1357,17 +1533,21 @@ func _interact(p, pressed: bool) -> void:
 	var acc: Array = st.acc
 	var sol: Array = st.sol
 	var mine: bool = int(st.owner) == p.team
-	for r in R + 1:
+	var heist: bool = mode == Defs.MODE_HEIST   # bunker rooms and vaults only matter in a heist
+	for r in (R + 1 if heist else 0):
 		var dc: Vector2i = bk.doors[r]
 		if p.pos.distance_to(Vector2(dc.x + 0.5, dc.y + 0.5)) < 1.5 and not acc[r] and not mine:
 			if r == V:
 				p.hint = Defs.H_VAULT
 			else:
-				var kid := _stolen_key(p, b)
+				var kid := _team_key(p, b)
 				if kid != -99999:
 					p.hint = Defs.H_UNLOCK
 					if pressed:
+						var kh: int = int(keys[kid].holder)
 						_consume_key(kid)
+						if kh != p.id and players.has(kh):
+							_msg("%s used %s's key" % [p.name, players[kh].name])
 						_grant(b, r)
 						_ev(Defs.EV_UNLOCK, Vector2(dc.x + 0.5, dc.y + 0.5))
 						var whose: String = "neutral" if int(st.owner) < 0 else Defs.TEAM_NAMES[int(st.owner)]
@@ -1375,7 +1555,7 @@ func _interact(p, pressed: bool) -> void:
 						return
 				else:
 					p.hint = Defs.H_KEYDOOR
-	for r in R:
+	for r in (R if heist else 0):
 		if p.pos.distance_to(bk.terminals[r]) < 1.3 and acc[r] and not mine:
 			if sol[r]:
 				p.hint = Defs.H_SOLVED
@@ -1453,21 +1633,23 @@ func _all_solved(b: int) -> bool:
 			return false
 	return true
 
-## Room 0 of a bunker rolls one of CODE / DIAL / MEMORY, room 1 one of TUNER / VALVES.
+## Every bunker draws its rooms as DIFFERENT puzzle types from a fresh shuffle of all types (not the match
+## seed: puzzles are host-only), avoiding the exact set the previous bunker got.
+var last_pz_set: Array = []
 func _room_puzzles() -> Array:
-	var a: Array = [Defs.PZ_CODE, Defs.PZ_DIAL, Defs.PZ_MEMORY]
-	var b: Array = [Defs.PZ_TUNER, Defs.PZ_VALVES]
-	var out: Array = [_new_puzzle(int(a[rng.randi() % a.size()]), 0), _new_puzzle(int(b[rng.randi() % b.size()]), 0)]
-	if R >= 4:
-		# rooms 3 and 4: the remaining types, so every room of a bunker differs where possible
-		var used := [int(out[0].ty), int(out[1].ty)]
-		var rest: Array = []
-		for ty in Defs.PUZZLES.size():
-			if not used.has(ty):
-				rest.append(ty)
-		rest.shuffle()
-		for k in 2:
-			out.append(_new_puzzle(int(rest[k % rest.size()]), 0))
+	var pool: Array = range(Defs.PUZZLES.size())
+	var pick: Array = []
+	for tries in 4:
+		pool.shuffle()
+		pick = pool.slice(0, mini(R, pool.size()))
+		var sorted_pick := pick.duplicate()
+		sorted_pick.sort()
+		if sorted_pick != last_pz_set:
+			last_pz_set = sorted_pick
+			break
+	var out: Array = []
+	for k in R:
+		out.append(_new_puzzle(int(pick[k % pick.size()]), 0))
 	return out
 
 
@@ -1484,40 +1666,59 @@ func _new_puzzle(ty: int, stage: int) -> Dictionary:
 	match ty:
 		Defs.PZ_CODE:
 			var seq: Array = []
-			for i in [5, 6, 7, 8][mini(stage, 3)]:
-				seq.append(rng.randi() % 4)
+			for i in [4, 5][mini(stage, 1)]:
+				seq.append(randi() % 4)
 			pz.seq = seq
 			pz.pos = 0
-			# from stage 3 on the code is shown briefly, then hidden: memorise it
-			pz.show = (2.0 + seq.size() * 0.35) if stage >= 2 else 1e9
 		Defs.PZ_TUNER:
 			pz.v = 0.5
 			pz.t = 0.5
 			pz.hold = 0.0
-			pz.phase = rng.randf() * TAU
+			pz.need = 2.5
+			pz.tol = [0.12, 0.1][mini(stage, 1)]
+			pz.phase = randf() * TAU
 		Defs.PZ_DIAL:
 			var combo: Array = []
-			for i in [3, 4, 4][mini(stage, 2)]:
-				combo.append(rng.randi() % 40)
+			for i in [2, 3][mini(stage, 1)]:
+				combo.append(randi() % 40)
 			pz.combo = combo
 			pz.idx = 0
 			pz.v = 0.0
 			pz.lastdir = 0
-		Defs.PZ_MEMORY:
-			var seq: Array = []
-			for i in [4, 5, 6, 7][mini(stage, 3)]:
-				seq.append(rng.randi() % 16)
-			pz.seq = seq
-			pz.pos = 0
-			pz.phase = 0   # 0 = watching the sequence, 1 = repeating it
-			pz.t = 0.0
-			pz.cx = 0
-			pz.cy = 0
+		Defs.PZ_TIMING:
+			pz.m = 0.0          # sweeping marker 0..1
+			pz.d = 1.0
+			pz.zc = randf_range(0.2, 0.8)
+			pz.zw = [0.11, 0.095, 0.08][mini(stage, 2)]
+			pz.spd = [0.6, 0.75, 0.9][mini(stage, 2)]
+			pz.hits = 0
+			pz.need = 3
+			pz.miss = 0.0
 		Defs.PZ_VALVES:
-			pz.g = [rng.randf_range(0.15, 0.35), rng.randf_range(0.65, 0.85), rng.randf_range(0.2, 0.8)]
+			pz.g = [randf_range(0.2, 0.35), randf_range(0.65, 0.8), randf_range(0.3, 0.7)]
 			pz.vel = [0.0, 0.0, 0.0]
 			pz.sel = 0
 			pz.hold = 0.0
+			pz.need = 3.0
+			pz.band = [0.13, 0.11][mini(stage, 1)]
+		Defs.PZ_STEADY:
+			pz.cx = 0.0
+			pz.cy = 0.0
+			pz.vx = 0.0
+			pz.vy = 0.0
+			pz.tx = 0.0
+			pz.ty2 = 0.0
+			pz.tr = [0.3, 0.24][mini(stage, 1)]
+			pz.ph = randf() * TAU
+			pz.hold = 0.0
+			pz.need = 3.0
+		Defs.PZ_PUMP:
+			pz.g = 0.15
+			pz.last = 0
+			pz.hold = 0.0
+			pz.need = 1.6
+			pz.lo = 0.75
+			pz.leak = [0.22, 0.3][mini(stage, 1)]
 	return pz
 
 
@@ -1564,39 +1765,38 @@ func _update_puzzle(p, inp: Array, use_pressed: bool, fire_edge: bool, dt: float
 	var part := 0.0
 	match int(pz.ty):
 		Defs.PZ_CODE:
-			if pz.show < 1e8 and pz.show > 0.0:
-				pz.show -= dt
-			elif pressed:
+			if pressed:
 				if dir == int(pz.seq[pz.pos]):
 					pz.pos += 1
 					_ev(Defs.EV_BEEP, p.pos)
 					if pz.pos >= pz.seq.size():
 						_pz_stage_done(p, b, r, pz)
+						return
 				else:
 					_pz_fail(p, b, r, pz)
+					return
 			part = float(pz.pos) / float(pz.seq.size())
 		Defs.PZ_TUNER:
 			var stg: int = pz.stage
-			pz.t = 0.5 + 0.36 * sin(elapsed * (0.4 + 0.12 * stg) + pz.phase) * (0.7 + 0.3 * sin(elapsed * (0.8 + 0.2 * stg)))
-			pz.v = clampf(pz.v + mx * dt * 0.75, 0.0, 1.0)
-			var tol: float = [0.08, 0.065, 0.055, 0.045][mini(stg, 3)]
-			if absf(pz.v - pz.t) < tol:
+			pz.t = 0.5 + 0.3 * sin(elapsed * (0.3 + 0.1 * stg) + pz.phase) * (0.7 + 0.3 * sin(elapsed * (0.6 + 0.15 * stg)))
+			pz.v = clampf(pz.v + mx * dt * 0.7, 0.0, 1.0)
+			if absf(pz.v - pz.t) < float(pz.tol):
 				pz.hold += dt
-				if pz.hold >= 3.5:
+				if pz.hold >= float(pz.need):
 					_pz_stage_done(p, b, r, pz)
 					return
 			else:
-				pz.hold = maxf(0.0, pz.hold - dt * 0.8)
-			part = pz.hold / 3.5
+				pz.hold = maxf(0.0, pz.hold - dt * 0.5)
+			part = pz.hold / float(pz.need)
 		Defs.PZ_DIAL:
 			if absf(mx) > 0.15:
-				pz.v = fposmod(pz.v + mx * dt * 14.0, 40.0)
+				pz.v = fposmod(pz.v + mx * dt * 12.0, 40.0)
 				pz.lastdir = 1 if mx > 0.0 else -1
 			if fire_edge:
 				var n: int = pz.combo[pz.idx]
 				var need := 1 if int(pz.idx) % 2 == 0 else -1
 				var off := absf(fposmod(pz.v - n + 20.0, 40.0) - 20.0)
-				if off < 0.6 and int(pz.lastdir) == need:
+				if off < 1.2 and int(pz.lastdir) == need:
 					pz.idx += 1
 					_ev(Defs.EV_BEEP, p.pos)
 					if pz.idx >= pz.combo.size():
@@ -1606,40 +1806,42 @@ func _update_puzzle(p, inp: Array, use_pressed: bool, fire_edge: bool, dt: float
 					_pz_fail(p, b, r, pz)
 					return
 			part = float(pz.idx) / float(pz.combo.size())
-		Defs.PZ_MEMORY:
-			if int(pz.phase) == 0:
-				pz.t += dt
-				if pz.t >= pz.seq.size() * 0.6 + 0.6:
-					pz.phase = 1
-			else:
-				if pressed:
-					if dir == 0: pz.cy = (int(pz.cy) + 3) % 4
-					elif dir == 2: pz.cy = (int(pz.cy) + 1) % 4
-					elif dir == 1: pz.cx = (int(pz.cx) + 1) % 4
-					else: pz.cx = (int(pz.cx) + 3) % 4
-				if fire_edge:
-					if int(pz.cy) * 4 + int(pz.cx) == int(pz.seq[pz.pos]):
-						pz.pos += 1
-						_ev(Defs.EV_BEEP, p.pos)
-						if pz.pos >= pz.seq.size():
-							_pz_stage_done(p, b, r, pz)
-							return
-					else:
-						_pz_fail(p, b, r, pz)
+		Defs.PZ_TIMING:
+			pz.miss = maxf(0.0, float(pz.miss) - dt)
+			var m: float = float(pz.m) + float(pz.d) * float(pz.spd) * dt
+			if m > 1.0 or m < 0.0:
+				pz.d = -float(pz.d)
+				m = clampf(m, 0.0, 1.0)
+			pz.m = m
+			if fire_edge:
+				if absf(m - float(pz.zc)) <= float(pz.zw):
+					pz.hits = int(pz.hits) + 1
+					_ev(Defs.EV_BEEP, p.pos)
+					if int(pz.hits) >= int(pz.need):
+						_pz_stage_done(p, b, r, pz)
 						return
-			part = float(pz.pos) / float(pz.seq.size())
+					# the zone jumps somewhere else, away from the marker
+					var nz: float = randf_range(0.15, 0.85)
+					if absf(nz - m) < 0.25:
+						nz = fposmod(nz + 0.5, 0.7) + 0.15
+					pz.zc = nz
+				else:
+					pz.hits = maxi(0, int(pz.hits) - 1)   # a miss costs one hit, not the stage
+					pz.miss = 0.4
+					_ev(Defs.EV_PZ_BAD, p.pos)
+			part = float(pz.hits) / float(pz.need)
 		Defs.PZ_VALVES:
 			var stg: int = pz.stage
-			var band: float = [0.1, 0.08, 0.065][mini(stg, 2)]
+			var band: float = pz.band
 			if pressed and (dir == 1 or dir == 3):
 				pz.sel = (int(pz.sel) + (1 if dir == 1 else 2)) % 3
 			var all_in := true
 			for i in 3:
-				var v: float = float(pz.vel[i]) * (1.0 - dt * 0.7) + rng.randfn(0.0, 1.0) * dt * (0.35 + 0.25 * stg)
-				v = clampf(v, -0.08 - 0.04 * stg, 0.08 + 0.04 * stg)
+				var v: float = float(pz.vel[i]) * (1.0 - dt * 0.8) + randfn(0.0, 1.0) * dt * (0.25 + 0.15 * stg)
+				v = clampf(v, -0.06 - 0.03 * stg, 0.06 + 0.03 * stg)
 				var g: float = pz.g[i] + v * dt
 				if i == int(pz.sel):
-					g += my * dt * 0.5
+					g += my * dt * 0.55
 				if g < 0.0 or g > 1.0:
 					v = -v
 				pz.vel[i] = v
@@ -1648,12 +1850,51 @@ func _update_puzzle(p, inp: Array, use_pressed: bool, fire_edge: bool, dt: float
 					all_in = false
 			if all_in:
 				pz.hold += dt
-				if pz.hold >= 4.0:
+				if pz.hold >= float(pz.need):
 					_pz_stage_done(p, b, r, pz)
 					return
 			else:
-				pz.hold = maxf(0.0, pz.hold - dt * 0.7)
-			part = pz.hold / 4.0
+				pz.hold = maxf(0.0, pz.hold - dt * 0.5)
+			part = pz.hold / float(pz.need)
+		Defs.PZ_STEADY:
+			var stg: int = pz.stage
+			# the ring wanders slowly, the cursor is shoved around by a random drift
+			var tt: float = elapsed + float(pz.ph)
+			pz.tx = 0.5 * sin(tt * (0.33 + 0.08 * stg)) * cos(tt * 0.21)
+			pz.ty2 = 0.45 * sin(tt * (0.47 + 0.1 * stg) + 1.3)
+			var jit: float = 1.5 + 0.6 * stg
+			var vx: float = float(pz.vx) * (1.0 - dt * 1.2) + randfn(0.0, 1.0) * dt * jit
+			var vy: float = float(pz.vy) * (1.0 - dt * 1.2) + randfn(0.0, 1.0) * dt * jit
+			vx = clampf(vx, -0.6, 0.6)
+			vy = clampf(vy, -0.6, 0.6)
+			pz.vx = vx
+			pz.vy = vy
+			pz.cx = clampf(float(pz.cx) + (vx + mx * 0.9) * dt, -1.0, 1.0)
+			pz.cy = clampf(float(pz.cy) + (vy + my * 0.9) * dt, -1.0, 1.0)
+			var dd := Vector2(float(pz.cx) - float(pz.tx), float(pz.cy) - float(pz.ty2)).length()
+			if dd <= float(pz.tr):
+				pz.hold += dt
+				if pz.hold >= float(pz.need):
+					_pz_stage_done(p, b, r, pz)
+					return
+			else:
+				pz.hold = maxf(0.0, pz.hold - dt * 0.6)
+			part = pz.hold / float(pz.need)
+		Defs.PZ_PUMP:
+			if pressed and (dir == 1 or dir == 3):
+				var side := 1 if dir == 1 else -1
+				if side != int(pz.last):
+					pz.g = minf(1.0, float(pz.g) + 0.065)
+					pz.last = side
+			pz.g = maxf(0.0, float(pz.g) - float(pz.leak) * dt)
+			if float(pz.g) >= float(pz.lo):
+				pz.hold += dt
+				if pz.hold >= float(pz.need):
+					_pz_stage_done(p, b, r, pz)
+					return
+			else:
+				pz.hold = maxf(0.0, pz.hold - dt * 0.8)
+			part = pz.hold / float(pz.need)
 	var cur: Dictionary = bst.pz[r]
 	p.progress = (float(cur.stage) + part) / stages
 
@@ -1693,6 +1934,8 @@ func _reset_tank(t) -> void:
 
 
 func _enter_tank(p, t) -> bool:
+	if _flag_of(p) >= 0:
+		return false   # flag carriers stay on foot
 	if t.driver == null:
 		t.driver = p
 		p.seat = 0
@@ -1880,6 +2123,8 @@ func _destroy_tank(t, killer) -> void:
 	t.respawn = TANK_RESPAWN
 	_ev(Defs.EV_EXPLOSION, t.pos)
 	_msg("%s %s DESTROYED" % [Defs.TEAM_NAMES[t.team], _vs(t).name])
+	if mode == Defs.MODE_TDM and killer != null and killer.ttype == 1 and killer.team != t.team and teams.has(killer.team) and (t.driver != null or t.gunner != null):
+		teams[killer.team].score += 2   # a crewed vehicle kill counts double
 	for o in [t.driver, t.gunner]:
 		if o != null:
 			_exit_tank(o)
@@ -2018,6 +2263,9 @@ const MORTAR_USE := 1.6       # how close to the tube you must stand to man it
 const MORTAR_KNOCK := 30.0    # taking this much damage in quick succession knocks the crew off it
 const MORTAR_WHISTLE := 1.25  # the incoming whistle starts this long before impact
 const MORTAR_BOT_ERR := [3.2, 2.2, 1.3]
+const MORTAR_SPECIAL_CD := 30.0   # rapid-fire barrage special
+const MORTAR_BURST := 6
+const MORTAR_BURST_GAP := 0.35
 
 var mortars := {}         # team -> {"pos", "user" (pid or -1), "cd", "hp", bot bookkeeping}
 var mshells: Array = []   # {"team", "owner", "from", "aim", "to", "t", "T", "warned"}
@@ -2115,24 +2363,34 @@ func _player_at_mortar(p, inp: Array, use_pressed: bool, fire: bool, dt: float) 
 	if use_pressed or over:
 		_mortar_leave(p.team)
 		return
-	if fire:
-		_mortar_fire(p, Vector2(float(inp[I_AIMX]), float(inp[I_AIMY])))
+	var aim := Vector2(float(inp[I_AIMX]), float(inp[I_AIMY]))
+	var m: Dictionary = mortars[p.team]
+	m.aim = aim
+	# special: rapid-fire barrage (RMB / alt fire), once every MORTAR_SPECIAL_CD seconds
+	if bool(inp[I_ALT]) and float(m.get("sp", 0.0)) <= 0.0 and int(m.get("burst", 0)) <= 0:
+		m.burst = MORTAR_BURST
+		m.burst_t = 0.0
+		m.sp = MORTAR_SPECIAL_CD
+		_msg("%s [%s] calls a MORTAR BARRAGE!" % [p.name, Defs.TEAM_NAMES[p.team]])
+	if fire and int(m.get("burst", 0)) <= 0:
+		_mortar_fire(p, aim)
 
 
-func _mortar_fire(p, aim: Vector2) -> bool:
+func _mortar_fire(p, aim: Vector2, barrage := false) -> bool:
 	if not mortars.has(p.team):
 		return false
 	var m: Dictionary = mortars[p.team]
-	if float(m.cd) > 0.0:
+	if float(m.cd) > 0.0 and not barrage:
 		return false
 	var from: Vector2 = m.pos
 	var to := _mortar_clamp(from, aim)
 	var d := from.distance_to(to)
-	var sd := mortar_scatter(d)
+	var sd := mortar_scatter(d) * (1.8 if barrage else 1.0) + (1.2 if barrage else 0.0)
 	var off := Vector2(clampf(rng.randfn(0.0, sd), -2.5 * sd, 2.5 * sd), clampf(rng.randfn(0.0, sd), -2.5 * sd, 2.5 * sd))
 	var hit := (to + off).clamp(Vector2(1.0, 1.0), Vector2(float(map.W) - 1.0, float(map.H) - 1.0))
 	mshells.append({"team": p.team, "owner": p, "from": from, "aim": to, "to": hit, "t": 0.0, "T": mortar_flight(d), "warned": false})
-	m.cd = MORTAR_RELOAD
+	if not barrage:
+		m.cd = MORTAR_RELOAD
 	_ev(Defs.EV_MORTAR, from, Vector2(float(p.team), d))
 	return true
 
@@ -2147,6 +2405,20 @@ func _update_mortars(dt: float) -> void:
 	for t in mortars:
 		var m: Dictionary = mortars[t]
 		m.cd = maxf(0.0, float(m.cd) - dt)
+		m.sp = maxf(0.0, float(m.get("sp", 0.0)) - dt)
+		if int(m.get("burst", 0)) > 0:
+			# barrage in progress: one shell every MORTAR_BURST_GAP seconds at the current aim point
+			m.burst_t = float(m.burst_t) - dt
+			var bu = players.get(int(m.user))
+			if bu == null or not _mortar_user(bu):
+				m.burst = 0
+			elif float(m.burst_t) <= 0.0:
+				m.burst_t = MORTAR_BURST_GAP
+				m.burst = int(m.burst) - 1
+				var baim: Vector2 = m.get("aim", m.pos)
+				_mortar_fire(bu, baim, true)
+				if int(m.burst) <= 0:
+					m.cd = MORTAR_RELOAD
 		var uid := int(m.user)
 		if uid < 0:
 			continue
@@ -2193,13 +2465,15 @@ func _mortar_snap() -> Dictionary:
 	for t in mortars:
 		var m: Dictionary = mortars[t]
 		var mp: Vector2 = m.pos
-		ms[t] = {"x": mp.x, "y": mp.y, "u": int(m.user), "cd": float(m.cd)}
+		ms[t] = {"x": mp.x, "y": mp.y, "u": int(m.user), "cd": float(m.cd), "sp": float(m.get("sp", 0.0)), "burst": int(m.get("burst", 0))}
 	var sh: Array = []
 	for s in mshells:
 		var a: Vector2 = s.aim
 		var f: Vector2 = s.from
-		sh.append([int(s.team), f.x, f.y, a.x, a.y, float(s.T) - float(s.t), float(s.T)])
-	return {"m": ms, "s": sh, "rng": mortar_range(), "min": MORTAR_MIN, "rel": MORTAR_RELOAD, "spl": MORTAR_SPLASH}
+		var hp: Vector2 = s.to
+		sh.append([int(s.team), f.x, f.y, a.x, a.y, float(s.T) - float(s.t), float(s.T), hp.x, hp.y])
+	return {"m": ms, "s": sh, "rng": mortar_range(), "min": MORTAR_MIN, "rel": MORTAR_RELOAD, "spl": MORTAR_SPLASH,
+		"spmax": MORTAR_SPECIAL_CD}
 
 
 ## Now and then one bot (4-player teams, or teams without humans) crews its base mortar and shells
@@ -2401,8 +2675,10 @@ func _pick_event() -> int:
 	for k in Defs.EVENT_NAMES.size():
 		if k == evt_last:
 			continue
-		if k == Defs.EVT_BOUNTY and teams.size() < 2:
+		if k == Defs.EVT_BOUNTY and (teams.size() < 2 or mode == Defs.MODE_CTF):
 			continue
+		if (k == Defs.EVT_SUPPLY or k == Defs.EVT_GOLD) and mode != Defs.MODE_HEIST:
+			continue   # loot events only make sense in a heist
 		opts.append(k)
 		if k == Defs.EVT_SUPPLY or k == Defs.EVT_ARTY:
 			opts.append(k)   # the action events come up a bit more often
@@ -2444,6 +2720,8 @@ func start_event(k: int) -> void:
 					best = int(t)
 			evt.team = best
 			text = "Bounty on team %s: +%d pts for every kill!" % [Defs.TEAM_NAMES[best], Defs.BOUNTY_VALUE]
+			if mode == Defs.MODE_TDM:
+				text = "Bounty on team %s: every kill on them counts DOUBLE!" % Defs.TEAM_NAMES[best]
 	var nm: String = Defs.STORM_NAMES[map.theme] if k == Defs.EVT_STORM else Defs.EVENT_NAMES[k]
 	_msg("EVENT - %s: %s" % [nm, text])
 	_ev(Defs.EV_EVENT, Vector2(evt.x, evt.y), Vector2(k, 0))
@@ -2805,7 +3083,7 @@ func _update_world(dt: float) -> void:
 			_return_key(int(it.key))
 	items = items.filter(func(it): return it.life > 0.0)
 	loot_t -= dt
-	if loot_t <= 0.0:
+	if loot_t <= 0.0 and mode == Defs.MODE_HEIST:
 		loot_t = 6.0
 		for b in map.bunkers.size():
 			if _vault_loot_count(b) < 8:
@@ -2858,7 +3136,157 @@ func _update_world(dt: float) -> void:
 		over = true
 		winner = top
 		_ev(Defs.EV_WIN, Vector2.ZERO)
-		_msg("MATCH OVER - %s TEAM WINS with %d points" % [Defs.TEAM_NAMES[top], top_score])
+		_msg("MATCH OVER - %s TEAM WINS with %d %s" % [Defs.TEAM_NAMES[top], top_score, ["points", "captures", "kills"][mode]])
+
+
+# ---------------------------------------------------------------- game modes (capture the flag / team deathmatch)
+
+## Where a team's flag stands: just behind its camp's vehicle spawn, on open walkable ground.
+func _flag_home(team: int) -> Vector2:
+	var s: Vector3 = map.team_spawns[team]
+	var base := Vector2(s.x, s.y)
+	var back := -Vector2.from_angle(s.z)
+	var side := Vector2(-back.y, back.x)
+	for d in [2.5, 3.5, 1.5, 4.5]:
+		for k in [0.0, 1.0, -1.0, 2.0, -2.0]:
+			var c: Vector2 = base + back * float(d) + side * float(k)
+			var ci := Vector2i(floori(c.x), floori(c.y))
+			if astar.is_in_boundsv(ci) and not astar.is_point_solid(ci) and map.cell_h(ci.x, ci.y) <= 0.0 \
+					and not map.circle_blocked(Vector2(ci.x + 0.5, ci.y + 0.5), 0.4):
+				return Vector2(ci.x + 0.5, ci.y + 0.5)
+	return base
+
+
+## The team whose flag this player carries (-1 = none).
+func _flag_of(p) -> int:
+	for ft in flags:
+		if int(flags[ft].st) == 1 and int(flags[ft].car) == p.id:
+			return int(ft)
+	return -1
+
+
+func _flag_drop(p) -> void:
+	var ft := _flag_of(p)
+	if ft < 0:
+		return
+	var f: Dictionary = flags[ft]
+	f.st = 2
+	f.car = -1
+	f.t = Defs.FLAG_RETURN
+	f.pos = p.pos
+	f.z = p.z
+	_ev(Defs.EV_PICKUP, p.pos, Vector2(0, 0))
+	_msg("%s dropped the %s flag!" % [p.name, Defs.TEAM_NAMES[ft]])
+
+
+func _flag_return(ft: int) -> void:
+	var f: Dictionary = flags[ft]
+	f.st = 0
+	f.car = -1
+	f.t = 0.0
+	f.pos = f.home
+	f.z = 0.0
+	_ev(Defs.EV_UNLOCK, f.home)
+
+
+func _update_flags(dt: float) -> void:
+	for ft in flags:
+		var t := int(ft)
+		var f: Dictionary = flags[ft]
+		if int(f.st) == 1:
+			var c = players.get(int(f.car))
+			if c == null or not c.alive or c.tank != null:
+				if c != null:
+					_flag_drop(c)
+				else:
+					f.st = 2
+					f.car = -1
+					f.t = Defs.FLAG_RETURN
+				continue
+			f.pos = c.pos
+			f.z = c.z
+			var own: Dictionary = flags.get(c.team, {})
+			if not own.is_empty() and int(own.st) == 0 and c.pos.distance_to(own.home) < 1.6 and absf(c.z) < 0.9:
+				teams[c.team].score += 1
+				_ev(Defs.EV_DEPOSIT, c.pos, Vector2(1, c.team))
+				_msg("%s [%s] CAPTURED the %s flag!  (%d/%d)" % [c.name, Defs.TEAM_NAMES[c.team], Defs.TEAM_NAMES[t], int(teams[c.team].score), score_limit])
+				_flag_return(t)
+			continue
+		if int(f.st) == 2:
+			f.t = float(f.t) - dt
+			if float(f.t) <= 0.0:
+				_flag_return(t)
+				_msg("The %s flag returned to its base" % Defs.TEAM_NAMES[t])
+				continue
+		for p in players.values():
+			if not p.alive or p.tank != null or p.pos.distance_to(f.pos) > 0.8 or absf(p.z - float(f.z)) > 0.9:
+				continue
+			if p.team == t:
+				if int(f.st) == 2:
+					_flag_return(t)
+					_msg("%s returned the %s flag" % [p.name, Defs.TEAM_NAMES[t]])
+					break
+			elif _flag_of(p) < 0:
+				f.st = 1
+				f.car = p.id
+				f.t = 0.0
+				_ev(Defs.EV_PICKUP, f.pos, Vector2(0, 0))
+				_msg("%s [%s] TOOK the %s flag!" % [p.name, Defs.TEAM_NAMES[p.team], Defs.TEAM_NAMES[t]])
+				break
+
+
+## Where a bot wants to go in CTF / TDM: {"goal": Vector2, "arrive": float}.
+func _bot_mode_goal(p) -> Dictionary:
+	var s: Vector3 = map.team_spawns[p.team]
+	var home := Vector2(s.x, s.y)
+	if mode == Defs.MODE_TDM:
+		# hunt the nearest enemy soldier or crewed vehicle
+		var bd := 1e9
+		var goal := Vector2(map.W * 0.5, map.H * 0.5)
+		for q in _hostiles(p.team):
+			if q.ttype == 0 or (q.ttype == 2 and q.driver == null and q.gunner == null):
+				continue
+			var d: float = p.pos.distance_to(q.pos)
+			if d < bd:
+				bd = d
+				goal = q.pos
+		return {"goal": goal, "arrive": 2.0}
+	var mine: Dictionary = flags.get(p.team, {})
+	var defender: bool = p.slot % 2 == 1
+	if _flag_of(p) >= 0:
+		# carrier: run home to our flag
+		return {"goal": mine.home if not mine.is_empty() else home, "arrive": 0.1}
+	if not mine.is_empty():
+		if int(mine.st) == 2 and (defender or p.pos.distance_to(mine.pos) < 35.0):
+			return {"goal": mine.pos, "arrive": 0.05}
+		if int(mine.st) == 1:
+			var c = players.get(int(mine.car))
+			if c != null and (defender or p.pos.distance_to(c.pos) < 25.0):
+				return {"goal": c.pos, "arrive": 1.0}
+		if defender:
+			var a := float(p.id % 6) * TAU / 6.0
+			var gp: Vector2 = mine.home + Vector2.from_angle(a) * 3.0
+			if astar.is_in_boundsv(Vector2i(floori(gp.x), floori(gp.y))) and astar.is_point_solid(Vector2i(floori(gp.x), floori(gp.y))):
+				gp = mine.home
+			return {"goal": gp, "arrive": 1.5}
+	# attacker: escort a nearby teammate carrying a flag, else raid the closest enemy base
+	var bd := 1e9
+	var goal := home
+	for ft in flags:
+		if int(ft) == p.team:
+			continue
+		var f: Dictionary = flags[ft]
+		if int(f.st) == 1:
+			var c = players.get(int(f.car))
+			if c != null and c.team == p.team:
+				if p.pos.distance_to(c.pos) < 25.0:
+					return {"goal": c.pos + Vector2.from_angle(float(p.id)) * 2.0, "arrive": 1.5}
+				continue
+		var d: float = home.distance_to(f.home) + p.pos.distance_to(f.pos) * 0.5
+		if d < bd:
+			bd = d
+			goal = f.pos
+	return {"goal": goal, "arrive": 0.05}
 
 
 # ---------------------------------------------------------------- AI teams
@@ -2978,6 +3406,10 @@ func _bot_think(p, dt: float) -> Array:
 func _bot_tank(p, b, dt: float, o: Dictionary) -> void:
 	var t = p.tank
 	var role := _role(p)
+	if mode != Defs.MODE_HEIST and b.travel == Vector2.INF and not _human_in(t):
+		# CTF / TDM: vehicles are taxis to wherever the bot wants to fight
+		var mg: Dictionary = _bot_mode_goal(p)
+		b.travel = mg.goal
 	if b.travel != Vector2.INF and not _human_in(t):
 		# taxi ride: drive to where we wanted to go on foot, then hop out
 		b.taxi_stuck = b.taxi_stuck + dt if (not t.moving and role != Defs.ROLE_GUNNER) else 0.0
@@ -3109,6 +3541,31 @@ func _bot_puzzle(p, b, dt: float, o: Dictionary) -> void:
 		var err: float = float(pz.t) - float(pz.v) + rng.randfn(0.0, 0.02 * (3 - difficulty))
 		o.mx = clampf(err * 9.0, -1.0, 1.0)
 		return
+	if ty == Defs.PZ_STEADY:
+		var nz: float = 0.08 * (3 - difficulty)
+		o.mx = clampf((float(pz.tx) - float(pz.cx)) * 5.0 - float(pz.vx) * 1.2 + rng.randfn(0.0, nz), -1.0, 1.0)
+		o.my = clampf((float(pz.ty2) - float(pz.cy)) * 5.0 - float(pz.vy) * 1.2 + rng.randfn(0.0, nz), -1.0, 1.0)
+		return
+	if ty == Defs.PZ_PUMP:
+		# alternate left/right at a human cadence (faster on higher difficulty)
+		if b.pz_t <= 0.0:
+			b.pz_release = not b.pz_release
+			b.pz_t = PZ_SPEED[difficulty] * rng.randf_range(0.2, 0.3)
+		o.mx = 1.0 if b.pz_release else -1.0
+		return
+	if ty == Defs.PZ_TIMING:
+		if b.pz_release:
+			if b.pz_t <= 0.0:
+				b.pz_release = false
+			return
+		var off: float = absf(float(pz.m) - float(pz.zc))
+		# reaction error: sometimes presses a bit early / late
+		var slack: float = float(pz.zw) * [1.4, 1.0, 0.7][difficulty]
+		if off < slack and b.pz_t <= 0.0:
+			o.fire = true
+			b.pz_release = true
+			b.pz_t = PZ_SPEED[difficulty] * rng.randf_range(0.5, 1.0)
+		return
 	if ty == Defs.PZ_VALVES:
 		var worst := 0
 		var we := -1.0
@@ -3156,25 +3613,9 @@ func _bot_puzzle(p, b, dt: float, o: Dictionary) -> void:
 		return
 	var dir := -1
 	if ty == Defs.PZ_CODE:
-		if float(pz.show) > 0.0 and float(pz.show) < 1e8:
-			return
 		dir = int(pz.seq[pz.pos])
 		if rng.randf() < 0.05:
 			dir = (dir + 1) % 4
-	elif ty == Defs.PZ_MEMORY:
-		if int(pz.phase) == 0:
-			return
-		var tgt: int = pz.seq[pz.pos]
-		var tx := tgt % 4
-		var tyy := tgt / 4
-		if tx != int(pz.cx):
-			dir = 1 if tx > int(pz.cx) else 3
-		elif tyy != int(pz.cy):
-			dir = 2 if tyy > int(pz.cy) else 0
-		elif rng.randf() < 0.96:
-			o.fire = true
-		else:
-			dir = rng.randi() % 4
 	if dir >= 0:
 		o.my = 1.0 if dir == 0 else (-1.0 if dir == 2 else 0.0)
 		o.mx = 1.0 if dir == 1 else (-1.0 if dir == 3 else 0.0)
@@ -3196,11 +3637,13 @@ func _bot_foot(p, b, dt: float, o: Dictionary) -> void:
 	var held := _stolen_key(p)
 	if held != -99999:
 		tb = int(keys[held].bunker)   # carrying a key: go use it
-	var bk: Dictionary = map.bunkers[tb]
-	var acc: Array = bstate[tb].acc
-	var sol: Array = bstate[tb].sol
+	# outside HEIST the map has no bunkers at all
+	var heist: bool = mode == Defs.MODE_HEIST and tb < map.bunkers.size()
+	var bk: Dictionary = map.bunkers[tb] if heist else {}
+	var acc: Array = bstate[tb].acc if heist else []
+	var sol: Array = bstate[tb].sol if heist else []
 	var own_b: int = TEAM_BUNKER[p.team]
-	var own_st: Dictionary = bstate[own_b]
+	var own_st: Dictionary = bstate[own_b] if heist and own_b < bstate.size() else {"acc": []}
 	var defend := false
 	if own_st.acc.has(true):
 		# the lowest-id living bot of the team holds the home bunker to reclaim it
@@ -3231,6 +3674,10 @@ func _bot_foot(p, b, dt: float, o: Dictionary) -> void:
 		var away: Vector2 = p.pos - danger
 		goal = danger + (away.normalized() if away.length() > 0.1 else Vector2.RIGHT) * 4.5
 		arrive = 0.5
+	elif mode != Defs.MODE_HEIST:
+		var mg: Dictionary = _bot_mode_goal(p)
+		goal = mg.goal
+		arrive = mg.arrive
 	elif crate != null and p.carried < 150:
 		goal = crate.pos
 		arrive = 0.2
@@ -3289,7 +3736,7 @@ func _bot_foot(p, b, dt: float, o: Dictionary) -> void:
 			if not acc[r]:
 				need = r
 				break
-		if need >= 0 and _stolen_key(p, tb) != -99999:
+		if need >= 0 and _team_key(p, tb) != -99999:
 			var dc: Vector2i = bk.doors[need]
 			goal = bk.door_outside[need]
 			press_near = Vector2(dc.x + 0.5, dc.y + 0.5)
@@ -3315,10 +3762,10 @@ func _bot_foot(p, b, dt: float, o: Dictionary) -> void:
 	# long trip ahead and a free team vehicle nearby: drive there instead of walking
 	b.travel = Vector2.INF
 	b.taxi_cd -= dt
-	if press_near == Vector2.INF and b.taxi_cd <= 0.0 and not _in_arty(p.pos) and p.pos.distance_to(goal) > 30.0:
+	if press_near == Vector2.INF and b.taxi_cd <= 0.0 and not _in_arty(p.pos) and p.pos.distance_to(goal) > 30.0 and _flag_of(p) < 0:
 		for tv in tanks:
 			if tv.team == p.team and tv.alive and (tv.driver == null or tv.gunner == null) and not _human_in(tv) \
-					and p.pos.distance_to(tv.pos) < 16.0 and tv.pos.distance_to(goal) < p.pos.distance_to(goal):
+					and p.pos.distance_to(tv.pos) < 16.0 and tv.pos.distance_to(goal) < p.pos.distance_to(goal) + 8.0:
 				b.travel = goal
 				goal = tv.pos
 				press_near = tv.pos
@@ -3392,6 +3839,9 @@ func _bot_foot(p, b, dt: float, o: Dictionary) -> void:
 	var fwd := Vector2.from_angle(o.yaw)
 	o.my = mv.dot(fwd)
 	o.mx = mv.dot(Vector2(-fwd.y, fwd.x))
+	# rockets are for vehicles and gates: against infantry a bot switches to its sidearm
+	if want_w == 1 and p.primary == Defs.W_RPG and b.target != null and b.target.ttype != 2:
+		want_w = 2
 	var want_id: int = [p.primary, p.secondary, Defs.W_KNIFE][want_w - 1]
 	if p.weapon != want_id and b.wcd <= 0.0:
 		b.wreq = want_w

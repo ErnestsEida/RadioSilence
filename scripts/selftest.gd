@@ -172,6 +172,21 @@ static func _test_mortars() -> void:
 	_check(b.hp < 100.0 or not b.alive, "the shell hurts the soldier at the target (%.0f hp left)" % b.hp)
 	_steps(w, 60 * 4, 1)
 	_check(float(w.mortars[0].cd) <= 0.0, "reloaded after %.0f s" % w.MORTAR_RELOAD)
+	# rapid-fire barrage special: 6 shells in quick succession, then a 30 s cooldown
+	var snap_m: Dictionary = w._mortar_snap()
+	_steps(w, 1, 1, {"alt": true, "ax": tp.x, "ay": tp.y})
+	_steps(w, 150, 1, {"ax": tp.x, "ay": tp.y})
+	var shot_after: int = w.mshells.size()
+	_check(shot_after == w.MORTAR_BURST and float(w.mortars[0].sp) > 25.0, "RMB fires a %d-shell barrage, then 30 s cooldown (%d shells)" % [w.MORTAR_BURST, shot_after])
+	_steps(w, 2, 1, {"alt": true, "ax": tp.x, "ay": tp.y})
+	_check(w.mshells.size() == shot_after, "the barrage can't be repeated while on cooldown")
+	var with_hit := false
+	for sh in w._mortar_snap().s:
+		with_hit = with_hit or (sh as Array).size() > 8
+	_check(with_hit and snap_m.has("spmax"), "snapshot carries the exact impact points (for the red ground warning)")
+	while w.mshells.size() > 0:
+		_steps(w, 10, 1, {"ax": tp.x, "ay": tp.y})
+	_steps(w, 60 * 4, 1)
 	# a shell damages gates
 	var g: Dictionary = w.gates[0]
 	g.open = false
@@ -232,10 +247,227 @@ static func _test_mortars() -> void:
 	_check(manned and fired >= 1, "an AI crews its mortar and shells a spotted enemy (%d shells)" % fired)
 
 
+static func _test_modes() -> void:
+	print("== game modes")
+	var m = MapData.new()
+	m.generate(0, SEED)
+	# ---- capture the flag: scripted flow
+	var w = World.new(m, [{"pid": 1, "peer": 1, "name": "A", "team": 0}, {"pid": 2, "peer": 1, "name": "B", "team": 1}], SEED, 1, 900.0, 3, Defs.MODE_CTF)
+	_quiet(w)
+	_check(w.mode == Defs.MODE_CTF and w.flags.size() == 2 and w.keys.is_empty(), "CTF: 2 teams -> 2 flags, no keys")
+	var loot := 0
+	for it in w.items:
+		if it.k == 1:
+			loot += 1
+	_check(loot == 0, "CTF: no vault loot")
+	var a = w.players[1]
+	var b = w.players[2]
+	w._exit_tank(a)
+	w._exit_tank(b)
+	var f1: Dictionary = w.flags[1]
+	var f0: Dictionary = w.flags[0]
+	var home1: Vector2 = f1.home
+	_check(not m.circle_blocked(home1, 0.3) and home1.distance_to(Vector2(m.team_spawns[1].x, m.team_spawns[1].y)) < 6.0, "flag stands on open ground at its camp")
+	a.pos = home1
+	_steps(w, 2, 1)
+	_check(int(f1.st) == 1 and int(f1.car) == 1, "walking over an enemy flag takes it")
+	var tk0 = w._slot_tank(a)
+	_check(not w._enter_tank(a, tk0) and a.tank == null, "a flag carrier can't enter a vehicle")
+	a.pos = Vector2(home1.x - 3.0, home1.y - 3.0) if not m.circle_blocked(Vector2(home1.x - 3.0, home1.y - 3.0), 0.3) else home1
+	_steps(w, 2, 1)
+	_check(f1.pos.distance_to(a.pos) < 0.01, "the flag moves with its carrier")
+	var snap: Dictionary = w.snapshot()
+	_check(int(snap.mode) == Defs.MODE_CTF and (snap.flags as Array).size() == 2 and int(snap.flags[1][3]) == 1 and int(snap.flags[1][4]) == 1, "snapshot carries mode and flag state/carrier")
+	w._kill_player(a, b)
+	_check(int(f1.st) == 2 and int(f1.car) == -1 and f1.pos.distance_to(a.pos) < 0.5, "carrier killed -> flag dropped where he fell")
+	b.pos = f1.pos
+	_steps(w, 2, 1)
+	_check(int(f1.st) == 0 and f1.pos == home1, "a defender touching the dropped flag returns it home")
+	_steps(w, 8 * 60, 1)
+	_check(a.alive, "carrier respawned")
+	b.pos = Vector2(f0.home.x, f0.home.y) + Vector2(20, 20)
+	a.pos = home1
+	_steps(w, 2, 1)
+	a.pos = _open_spot(m, Vector2(m.W * 0.5, m.H * 0.5))
+	_steps(w, 2, 1)
+	w._kill_player(a, null)
+	var dropped_at: Vector2 = f1.pos
+	_steps(w, int((Defs.FLAG_RETURN - 1.0) * 60.0), 1)
+	var still_dropped: bool = int(f1.st) == 2
+	_steps(w, 2 * 60, 1)
+	_check(still_dropped and int(f1.st) == 0 and f1.pos == home1 and dropped_at != home1, "an untouched dropped flag returns home after %.0f s" % Defs.FLAG_RETURN)
+	_steps(w, 6 * 60, 1)
+	a.pos = home1
+	_steps(w, 2, 1)
+	b.pos = f0.home
+	_steps(w, 2, 1)
+	_check(int(f0.st) == 1 and int(f0.car) == 2, "the other team takes ours too")
+	b.pos = Vector2(f0.home.x, f0.home.y) + Vector2(20, 20)
+	a.pos = f0.home
+	_steps(w, 4, 1)
+	_check(int(w.teams[0].score) == 0 and int(f1.st) == 1, "no capture while our own flag is away")
+	w._kill_player(b, a)
+	w.players[1].pos = f0.home   # a still holds flag 1; the defender's flag returns only when touched
+	_steps(w, 2, 1)
+	_check(int(f0.st) == 2, "our flag lies where its carrier died")
+	a.pos = f0.pos
+	_steps(w, 2, 1)
+	a.pos = f0.home
+	_steps(w, 2, 1)
+	_check(int(w.teams[0].score) == 1 and int(f1.st) == 0 and int(f0.st) == 0, "returning our flag, then reaching it with theirs = 1 capture")
+	# ---- team deathmatch: kill scores
+	var wt = World.new(m, [{"pid": 1, "peer": 1, "name": "A", "team": 0}, {"pid": 2, "peer": 1, "name": "B", "team": 1}, {"pid": 3, "peer": 1, "name": "C", "team": 1}], SEED, 1, 900.0, 5, Defs.MODE_TDM)
+	_quiet(wt)
+	var ta = wt.players[1]
+	var tb = wt.players[2]
+	var tc = wt.players[3]
+	_check(wt.flags.is_empty() and wt.keys.is_empty(), "TDM: no flags, no keys")
+	wt._exit_tank(tb)
+	wt._exit_tank(tc)
+	wt._kill_player(tb, ta)
+	_check(int(wt.teams[0].score) == 1, "TDM: an enemy kill scores 1")
+	wt._kill_player(tc, tc)
+	_check(int(wt.teams[0].score) == 1 and int(wt.teams[1].score) == 0, "TDM: suicides don't score")
+	var tk1 = null
+	for t in wt.tanks:
+		if t.team == 1:
+			tk1 = t
+	wt._respawn(tc)
+	wt._enter_tank(tc, tk1)
+	wt._destroy_tank(tk1, ta)
+	_check(int(wt.teams[0].score) == 3, "TDM: a crewed vehicle kill scores 2 (%d)" % int(wt.teams[0].score))
+	wt._respawn(tb)
+	wt._kill_player(tb, ta)
+	wt._respawn(tb)
+	wt._kill_player(tb, ta)
+	wt.step(DT)
+	_check(wt.over and wt.winner == 0, "TDM: first to the kill limit wins")
+	# ---- 2-team matches
+	var w2 = World.new(m, _bots(2, 2), SEED, 1, 900.0, 3, Defs.MODE_HEIST)
+	var w2c = World.new(m, _bots(2, 4), SEED, 1, 900.0, 3, Defs.MODE_CTF)
+	var opp: bool = Vector2(m.team_spawns[0].x, m.team_spawns[0].y).distance_to(Vector2(m.team_spawns[1].x, m.team_spawns[1].y)) > m.W * 0.9
+	_check(w2.teams.size() == 2 and w2.tanks.size() == 2 and w2c.teams.size() == 2 and w2c.tanks.size() == 4 and w2.teams.has(0) and w2.teams.has(1) and opp,
+		"2-team matches: only teams 0 and 1 (opposite corners) and their vehicles")
+	# ---- bot-only matches score
+	for gm in [Defs.MODE_CTF, Defs.MODE_TDM]:
+		var wb = World.new(m, _bots(2, 2), SEED + gm, 1, 900.0, 999999, gm)
+		var t0 := Time.get_ticks_msec()
+		var total := 0
+		var secs := 0
+		for s in 8 * 60:
+			for k in 60:
+				wb.step(DT)
+			total = 0
+			for t in wb.teams:
+				total += int(wb.teams[t].score)
+			secs = s + 1
+			if total > 0:
+				break
+		_check(total > 0, "bot-only %s: score %d after %d s (%d ms)" % [Defs.MODE_NAMES[gm], total, secs, Time.get_ticks_msec() - t0])
+
+
+static func _test_weapons() -> void:
+	print("== weapons")
+	var m = MapData.new()
+	m.generate(0, SEED)
+	var w = World.new(m, [{"pid": 1, "peer": 1, "name": "A", "team": 0, "loadout": [Defs.W_BURST, Defs.W_MPISTOL, Defs.EQ_MEDKIT]},
+		{"pid": 2, "peer": 1, "name": "A2", "team": 0, "loadout": [Defs.W_RPG, Defs.W_PISTOL, Defs.EQ_MEDKIT]},
+		{"pid": 3, "peer": 1, "name": "B", "team": 1}], SEED)
+	_quiet(w)
+	for q in w.players.values():
+		w._exit_tank(q)
+	var a = w.players[1]
+	var a2 = w.players[2]
+	var b = w.players[3]
+	var ids := {}
+	for i in Defs.WPN.size():
+		ids[str(Defs.WPN[i].name)] = i
+	_check(Defs.WPN.size() == 13 and Defs.W_RPG == 12 and int(ids.get("LMG", -1)) == Defs.W_LMG, "13 weapons, the 8 original ids unchanged, new ones appended")
+	_check(a.weapon == Defs.W_BURST and a.secondary == Defs.W_MPISTOL and a2.weapon == Defs.W_RPG, "new weapons can be chosen in the loadout")
+	# an open stretch: 8 m in clear view to the east of the spot
+	var sp0: Vector3 = m.team_spawns[0]
+	var spot := _open_spot(m, Vector2(sp0.x, sp0.y))
+	for k in 60:
+		var cand := _open_spot(m, Vector2(sp0.x, sp0.y) + Vector2.from_angle(float(k) * 2.4) * (4.0 + float(k) * 0.5))
+		if w._see(cand, cand + Vector2(8.0, 0.0)) and not m.circle_blocked(cand + Vector2(8.0, 0.0), 0.7) and not m.circle_blocked(cand + Vector2(-1.4, 0.0), 0.3):
+			spot = cand
+			break
+	b.pos = spot + Vector2(0.0, 30.0)
+	a2.pos = spot + Vector2(-20.0, 20.0)
+	# burst: one trigger pull = 3 rounds, spread over a few ticks; holding doesn't fire again
+	a.pos = spot
+	var mag0: int = int(a.mags[Defs.W_BURST])
+	var s0: int = a.shots
+	_steps(w, 1, 1, {"fire": true})
+	var first: int = a.shots - s0
+	_steps(w, 40, 1, {"fire": true})
+	_check(first == 1 and a.shots - s0 == 3 and int(a.mags[Defs.W_BURST]) == mag0 - 3, "a trigger pull fires a 3-round burst (%d, then %d shots)" % [first, a.shots - s0])
+	_steps(w, 1, 1)
+	_steps(w, 1, 1, {"fire": true})
+	_steps(w, 30, 1)
+	_check(a.shots - s0 == 6, "the next pull fires another burst (%d shots)" % (a.shots - s0))
+	# rocket launcher: a slow explosive projectile that wrecks a vehicle
+	var tank = null
+	for t in w.tanks:
+		if t.team == 1 and t.alive:
+			tank = t
+	_check(tank != null, "an enemy vehicle to shoot at")
+	if tank != null:
+		a2.pos = spot
+		a.pos = spot + Vector2(0.0, 1.5)
+		tank.pos = spot + Vector2(8.0, 0.0)
+		tank.hp = float(w._vs(tank).hp)
+		var hp0: float = tank.hp
+		var pitch := atan2(w._chest_z(tank) - w._eye_z(a2), 8.0)
+		_steps(w, 1, 2, {"fire": true, "yaw": 0.0, "pitch": pitch})
+		_check(w.shells.size() == 1 and int(a2.mags[Defs.W_RPG]) == 0 and a2.reload > 0.0, "firing launches one rocket and starts the reload")
+		var t_fly := 0.0
+		while w.shells.size() > 0 and t_fly < 4.0:
+			_steps(w, 1, 2, {"yaw": 0.0, "pitch": pitch})
+			t_fly += DT
+		_check(t_fly > 0.2 and t_fly < 1.0, "the rocket is a slow projectile (%.2f s for 8 m)" % t_fly)
+		_check(tank.hp < hp0 - 120.0, "the rocket's explosion hurts the vehicle (%.0f -> %.0f)" % [hp0, tank.hp])
+		tank.pos = spot + Vector2(60.0, 60.0)
+	# medkit: heals the hurt teammate in front, otherwise yourself
+	a2.pos = spot
+	a.pos = spot + Vector2(-1.4, 0.0)
+	a.hp = 60.0
+	a2.hp = 40.0
+	_steps(w, 2, 1, {"yaw": 0.0})
+	var rec := {}
+	for r in w.snapshot().p:
+		if int(r.id) == 1:
+			rec = r
+	_check(a.hint == Defs.H_HEAL and int(rec.get("hid", -1)) == 2, "aiming at a hurt teammate shows the heal hint")
+	var n0: int = a.eqn
+	_steps(w, 2, 1, {"yaw": 0.0, "throwc": a.throw_count + 1})
+	var healed_msg := false
+	for mm in w.messages:
+		healed_msg = healed_msg or str(mm[0]) == "A healed A2"
+	_check(a2.hp == 90.0 and a.hp == 60.0 and a.eqn == n0 - 1 and healed_msg, "medkit heals the teammate in front (+50, 'A healed A2')")
+	a2.hp = 40.0
+	_steps(w, 2, 1, {"yaw": PI})
+	_check(a.hint != Defs.H_HEAL, "no heal hint when facing away")
+	_steps(w, 2, 1, {"yaw": PI, "throwc": a.throw_count + 1})
+	_check(a.hp == 100.0 and a2.hp == 40.0 and a.eqn == n0 - 2, "facing away, the medkit heals yourself")
+
+
 static func run() -> int:
 	fails = 0
+	if OS.get_cmdline_user_args().has("--weapons"):
+		_test_weapons()
+		print("RESULT: %s (%d failures)" % ["PASS" if fails == 0 else "FAIL", fails])
+		return 0 if fails == 0 else 1
 	if OS.get_cmdline_user_args().has("--mortars"):
 		_test_mortars()
+		print("RESULT: %s (%d failures)" % ["PASS" if fails == 0 else "FAIL", fails])
+		return 0 if fails == 0 else 1
+	if OS.get_cmdline_user_args().has("--puzzles"):
+		_test_puzzles()
+		print("RESULT: %s (%d failures)" % ["PASS" if fails == 0 else "FAIL", fails])
+		return 0 if fails == 0 else 1
+	if OS.get_cmdline_user_args().has("--modes"):
+		_test_modes()
 		print("RESULT: %s (%d failures)" % ["PASS" if fails == 0 else "FAIL", fails])
 		return 0 if fails == 0 else 1
 	for mi in MapData.MAPS.size():
@@ -293,7 +525,7 @@ static func run() -> int:
 		if t.driver != null and t.gunner != null:
 			crewed += 1
 	_check(wq.players.size() == 16 and wq.keys.size() == 16, "16 players and exactly 16 keys")
-	_check(wq.tanks.size() == 8 and crewed == 8, "2 crewed vehicles per team (%d vehicles, %d crewed)" % [wq.tanks.size(), crewed])
+	_check(wq.tanks.size() == 8 and crewed == 0, "2 vehicles per team, everyone starts on foot (%d vehicles, %d crewed)" % [wq.tanks.size(), crewed])
 	var nrooms := 0
 	var distinct := true
 	for st in wq.bstate:
@@ -380,7 +612,7 @@ static func run() -> int:
 		var d: int = int(pz.seq[pz.pos])
 		_steps(w, 2, 1, {"mx": 1.0 if d == 1 else (-1.0 if d == 3 else 0.0), "my": 1.0 if d == 0 else (-1.0 if d == 2 else 0.0)})
 		_steps(w, 2, 1)
-	_check(w.bstate[sb].sol[0], "4-stage code lock solved (incl. hidden-code stages)")
+	_check(w.bstate[sb].sol[0], "code lock solved (code always visible)")
 	a.pos = bk.terminals[1]
 	_press_use(w, 1)
 	for i in 6000:
@@ -418,30 +650,7 @@ static func run() -> int:
 	_check(not w.bstate[sb].acc[0] and not w.bstate[sb].acc[2] and not w.keys[2].used, "owners held 60 s: bunker sealed and keys restored")
 	_check(b1.keys.has(2) and b2.keys.has(3) and m3.get_wall(bk.doors[0].x, bk.doors[0].y) == MapData.KEYDOOR, "keys back in the owners' hands, doors locked")
 
-	print("== AI solves every puzzle type")
-	for ty in 5:
-		var mp = MapData.new()
-		mp.generate(0, SEED)
-		var wp = World.new(mp, [{"pid": 1, "peer": 1, "name": "A", "team": 0}, {"pid": 100, "peer": 0, "name": "B", "team": 1, "bot": true}], SEED)
-		_quiet(wp)
-		var bot = wp.players[100]
-		wp._exit_tank(bot)
-		var tb: int = wp.TEAM_BUNKER[0]
-		wp._grant(tb, 0)
-		wp.bstate[tb].pz[0] = wp._new_puzzle(ty, 0)
-		bot.pos = mp.bunkers[tb].terminals[0]
-		bot.puzzle = 0
-		bot.pz_bunker = tb
-		var secs := 0.0
-		for i in 60 * 400:
-			wp.players[1].alive = false
-			wp.players[1].respawn = 99.0
-			bot.puzzle = 0 if not wp.bstate[tb].sol[0] else -1
-			wp.step(DT)
-			secs += DT
-			if wp.bstate[tb].sol[0]:
-				break
-		_check(wp.bstate[tb].sol[0], "AI solved %s in %.0f s" % [Defs.PUZZLES[ty].name, secs])
+	_test_puzzles()
 
 	print("== movement and bullets")
 	var m4 = MapData.new()
@@ -625,6 +834,8 @@ static func run() -> int:
 	w5.end_event()
 
 	_test_mortars()
+	_test_modes()
+	_test_weapons()
 
 	for run_cfg in [[0, 2], [1, 2], [2, 2], [3, 2], [0, 4]]:
 		var mi: int = run_cfg[0]
@@ -679,3 +890,49 @@ static func run() -> int:
 
 	print("RESULT: %s (%d failures)" % ["PASS" if fails == 0 else "FAIL", fails])
 	return 0 if fails == 0 else 1
+
+
+static func _test_puzzles() -> void:
+	print("== puzzle rooms are random and varied")
+	var mr = MapData.new()
+	mr.generate(0, SEED)
+	var wr = World.new(mr, [{"pid": 1, "peer": 1, "name": "A", "team": 0}], SEED)
+	_quiet(wr)
+	var seen := {}
+	var pairs := {}
+	var dup := 0
+	for i in 200:
+		var rp: Array = wr._room_puzzles()
+		var key: Array = []
+		for q in rp:
+			seen[int(q.ty)] = true
+			key.append(int(q.ty))
+		pairs[str(key)] = true
+		if key.size() >= 2 and key[0] == key[1]:
+			dup += 1
+	_check(dup == 0, "rooms of a bunker never share a puzzle type")
+	_check(seen.size() == Defs.PUZZLES.size() and pairs.size() >= 20, "all %d puzzle types appear, %d different room combos in 200 rolls" % [seen.size(), pairs.size()])
+	print("== AI solves every puzzle type")
+	for ty in Defs.PUZZLES.size():
+		var mp = MapData.new()
+		mp.generate(0, SEED)
+		var wp = World.new(mp, [{"pid": 1, "peer": 1, "name": "A", "team": 0}, {"pid": 100, "peer": 0, "name": "B", "team": 1, "bot": true}], SEED)
+		_quiet(wp)
+		var bot = wp.players[100]
+		wp._exit_tank(bot)
+		var tb: int = wp.TEAM_BUNKER[0]
+		wp._grant(tb, 0)
+		wp.bstate[tb].pz[0] = wp._new_puzzle(ty, 0)
+		bot.pos = mp.bunkers[tb].terminals[0]
+		bot.puzzle = 0
+		bot.pz_bunker = tb
+		var secs := 0.0
+		for i in 60 * 400:
+			wp.players[1].alive = false
+			wp.players[1].respawn = 99.0
+			bot.puzzle = 0 if not wp.bstate[tb].sol[0] else -1
+			wp.step(DT)
+			secs += DT
+			if wp.bstate[tb].sol[0]:
+				break
+		_check(wp.bstate[tb].sol[0], "AI solved %s in %.0f s" % [Defs.PUZZLES[ty].name, secs])

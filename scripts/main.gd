@@ -10,6 +10,8 @@ const Defs = preload("res://scripts/defs.gd")
 const SelfTest = preload("res://scripts/selftest.gd")
 const MenuBg = preload("res://scripts/menu_bg.gd")
 const VehicleBake = preload("res://scripts/vehicle_bake.gd")
+const WeaponIcons = preload("res://scripts/weapon_icons.gd")
+const Atmos = preload("res://scripts/atmos.gd")
 
 const MAP_SEED := 20261119
 const MOUSE_SENS := 0.0026
@@ -94,7 +96,11 @@ var browser_msg := ""     # last connect message shown above the server list
 var status_label: Label
 var map_pick: OptionButton
 var map_desc: Label
-var ai_pick: OptionButton
+var ai_pick: OptionButton   # number of teams: 0 = 4 teams (3 enemy AI teams in solo), 1 = 2 teams
+var mode_pick: OptionButton
+var lobby_mode: OptionButton
+var lobby_teams: OptionButton
+var lobby_team_btns: Array = []
 var mate_check: CheckBox
 var size_pick: OptionButton
 var lobby_size: OptionButton
@@ -103,9 +109,15 @@ var lobby_vehicle_desc: Label
 var time_pick: OptionButton
 var score_pick: OptionButton
 var lobby_list: Label
+var lobby_name: LineEdit
+var ui_key := ""
 var lobby_info: Label
 var lobby_map: OptionButton
 var lobby_fill: CheckBox
+var weather_pick: OptionButton   # index 0 = Random, else Atmos weather + 1
+var tod_pick: OptionButton       # index 0 = Random, else Atmos tod + 1
+var lobby_weather: OptionButton
+var lobby_tod: OptionButton
 var start_btn: Button
 var loadout_pickers: Array = []
 var ui_theme: Theme
@@ -126,7 +138,7 @@ func _ready() -> void:
 			shot_mode = a.substr(11)
 	res.shader = load("res://shaders/raycast.gdshader")
 	res.wall_tex = Gfx.make_walls()
-	res.sprite_tex = Gfx.make_sprites()
+	res.sprite_tex = Atmos.add_lamp_sprite(Gfx.make_sprites())
 	# 3D vehicle models pre-rendered from 16 angles (cached in user://)
 	var baker = VehicleBake.new()
 	add_child(baker)
@@ -134,6 +146,11 @@ func _ready() -> void:
 	baker.queue_free()
 	res.veh_tex = ImageTexture.create_from_image(vimg) if vimg.get_width() >= 2048 else null
 	print("3D vehicles: %s (%dx%d atlas)" % ["loaded" if res.veh_tex != null else "NOT AVAILABLE - using 2D sprites", vimg.get_width(), vimg.get_height()])
+	# side-view weapon icons for the loadout pickers and the HUD (cached in user://)
+	var icons: WeaponIcons = WeaponIcons.new()
+	add_child(icons)
+	await icons.bake(not OS.get_cmdline_user_args().has("--rebake-icons"))
+	icons.queue_free()
 	_build_ui()
 	Net.lobby_changed.connect(_on_lobby_changed)
 	Net.game_started.connect(_on_net_game_started)
@@ -150,7 +167,12 @@ func _ready() -> void:
 		if parts.size() > 2:
 			loadout[0] = int(parts[2])
 		if parts.size() > 3:
-			size_pick.select(1 if int(parts[3]) == 4 else 0)
+			size_pick.select(1 if int(parts[3]) <= 2 else 0)
+		if parts.size() > 4:
+			mode_pick.select(clampi(int(parts[4]), 0, Defs.MODE_NAMES.size() - 1))
+			_on_mode_picked(mode_pick.selected)
+		if parts.size() > 5:
+			ai_pick.select(1 if int(parts[5]) == 2 else 0)
 		if shot_mode != "menu":
 			_start_local("coop" if shot_mode == "coop" else "solo")
 		else:
@@ -265,14 +287,23 @@ func _build_ui() -> void:
 	map_desc = _label(mcol, "", 14, Color(0.75, 0.78, 0.7))
 	map_desc.autowrap_mode = TextServer.AUTOWRAP_WORD
 	map_pick.item_selected.connect(_on_map_picked)
+	mode_pick = OptionButton.new()
+	for mn in Defs.MODE_NAMES:
+		mode_pick.add_item("Mode: %s" % mn)
+	mode_pick.item_selected.connect(_on_mode_picked)
+	mcol.add_child(mode_pick)
 	ai_pick = OptionButton.new()
-	for n in [3, 2, 1, 0]:
-		ai_pick.add_item("%d enemy AI team%s" % [n, "" if n == 1 else "s"])
+	ai_pick.add_item("Teams: 4  (1v1v1v1 - 3 enemy teams)")
+	ai_pick.add_item("Teams: 2  (1v1 - opposite corners)")
 	mcol.add_child(ai_pick)
 	size_pick = OptionButton.new()
-	size_pick.add_item("2 per team  (8 players, 8 keys, 8 puzzles)")
-	size_pick.add_item("4 per team  (16 players, 16 keys, 16 puzzles)")
+	size_pick.add_item("16 players  (1v1: 8 per team / 1v1v1v1: 4 per team)")
+	size_pick.add_item("8 players  (1v1: 4 per team / 1v1v1v1: 2 per team)")
 	mcol.add_child(size_pick)
+	var wrow := HBoxContainer.new()
+	mcol.add_child(wrow)
+	weather_pick = _weather_picker(wrow)
+	tod_pick = _tod_picker(wrow)
 	mate_check = CheckBox.new()
 	mate_check.text = "AI teammates when playing solo"
 	mate_check.button_pressed = true
@@ -289,13 +320,17 @@ func _build_ui() -> void:
 		score_pick.add_item("no score limit" if sc > 99999 else "first to %d" % sc)
 	score_pick.select(1)
 	hm.add_child(score_pick)
+	_on_mode_picked(0)
 	_section(vb, "SOLDIER & VEHICLE")
 	var hb := _row(vb)
 	_lbl90(hb, "Callsign")
 	name_edit = LineEdit.new()
-	name_edit.text = "Player"
+	name_edit.text = Settings.pname
 	name_edit.custom_minimum_size = Vector2(220, 0)
 	name_edit.max_length = 16
+	name_edit.text_changed.connect(func(t: String):
+		Settings.pname = t.strip_edges()
+		Settings.save_settings())
 	hb.add_child(name_edit)
 	_loadout_row(vb)
 	var vr := _row(vb)
@@ -336,13 +371,38 @@ func _build_ui() -> void:
 	lobby_fill.toggled.connect(func(_b): _push_lobby_cfg())
 	lm.add_child(lobby_fill)
 	lobby_size = OptionButton.new()
-	lobby_size.add_item("2 per team")
-	lobby_size.add_item("4 per team")
+	lobby_size.add_item("16 players")
+	lobby_size.add_item("8 players")
 	lobby_size.item_selected.connect(func(_i): _push_lobby_cfg())
 	lm.add_child(lobby_size)
+	lobby_weather = _weather_picker(lm)
+	lobby_weather.item_selected.connect(func(_i): _push_lobby_cfg())
+	lobby_tod = _tod_picker(lm)
+	lobby_tod.item_selected.connect(func(_i): _push_lobby_cfg())
+	var lmm := _row(lv)
+	lobby_mode = OptionButton.new()
+	for mn in Defs.MODE_NAMES:
+		lobby_mode.add_item("Mode: %s" % mn)
+	lobby_mode.item_selected.connect(func(_i): _push_lobby_cfg())
+	lmm.add_child(lobby_mode)
+	lobby_teams = OptionButton.new()
+	lobby_teams.add_item("Teams: 4")
+	lobby_teams.add_item("Teams: 2")
+	lobby_teams.item_selected.connect(func(_i): _push_lobby_cfg())
+	lmm.add_child(lobby_teams)
+	var nrow := _row(lv)
+	_label(nrow, "Your name:", 18)
+	lobby_name = LineEdit.new()
+	lobby_name.max_length = 16
+	lobby_name.custom_minimum_size = Vector2(220, 0)
+	lobby_name.text_submitted.connect(func(_t): _on_lobby_name())
+	lobby_name.focus_exited.connect(_on_lobby_name)
+	nrow.add_child(lobby_name)
+	_button(nrow, "RENAME", _on_lobby_name)
 	lobby_list = _label(lv, "", 22)
 	var th := _row(lv)
 	_label(th, "Join team:", 18)
+	lobby_team_btns = []
 	for t in 4:
 		var b := Button.new()
 		b.text = Defs.TEAM_NAMES[t]
@@ -350,6 +410,7 @@ func _build_ui() -> void:
 		b.add_theme_color_override("font_color", Defs.TEAM_COLORS[t].lightened(0.3))
 		b.pressed.connect(_on_team.bind(t))
 		th.add_child(b)
+		lobby_team_btns.append(b)
 	var vrow := _row(lv)
 	_label(vrow, "Your vehicle:", 18)
 	lobby_vehicle = OptionButton.new()
@@ -388,7 +449,12 @@ func _loadout_row(parent: Node) -> void:
 	for slot in 3:
 		var ob := OptionButton.new()
 		for id in lists[slot]:
-			ob.add_item(Defs.WPN[id].name if slot < 2 else Defs.EQUIP_NAMES[id])
+			var label: String = Defs.WPN[id].name if slot < 2 else Defs.EQUIP_NAMES[id]
+			var icon: Texture2D = WeaponIcons.weapon_small(id) if slot < 2 else WeaponIcons.equip_small(id)
+			if icon != null:
+				ob.add_icon_item(icon, label)
+			else:
+				ob.add_item(label)
 		ob.select(lists[slot].find(loadout[slot]))
 		ob.item_selected.connect(func(i):
 			loadout[slot] = lists[slot][i]
@@ -435,6 +501,10 @@ func _build_options() -> void:
 	_check(v, "Invert mouse Y", Settings.invert_y, func(b): Settings.invert_y = b)
 	_check(v, "Fullscreen", Settings.fullscreen, func(b): Settings.fullscreen = b)
 	_check(v, "Show FPS", Settings.show_fps, func(b): Settings.show_fps = b)
+	_label(v, "Interface", 22, Color(0.8, 0.9, 0.75))
+	_slider(v, "UI scale", 0.7, 1.5, 0.05, Settings.ui_scale, func(x): Settings.ui_scale = x)
+	_slider(v, "Game log size", 0.6, 1.6, 0.05, Settings.log_size, func(x): Settings.log_size = x)
+	_check(v, "Teammate name tags & health", Settings.nametags, func(b): Settings.nametags = b)
 	_label(v, "Game", 22, Color(0.8, 0.9, 0.75))
 	var dr := _row(v)
 	var dl := _label(dr, "AI difficulty", 18)
@@ -655,7 +725,7 @@ func _refresh_browser() -> void:
 		var pl_l: Label = cells[2]
 		pl_l.text = "%d/%d" % [players, mx]
 		var tm_l: Label = cells[3]
-		tm_l.text = "4 x %d" % int(s.get("size", 2))
+		tm_l.text = "%d x %d" % [int(s.get("teams", 4)), int(s.get("size", 2))]
 		var pg_l: Label = cells[4]
 		pg_l.text = ("%d ms" % ping) if ping >= 0 else "-"
 		var st_l: Label = cells[5]
@@ -795,23 +865,68 @@ func _add_bots(roster: Array, team: int, count: int) -> void:
 		roster.append({"pid": pid, "peer": 0, "name": "AI " + Defs.BOT_NAMES[pid % Defs.BOT_NAMES.size()], "team": team, "bot": true})
 
 
-func _match_cfg(roster: Array, map_i: int, team_size := 2) -> Dictionary:
-	return {"seed": MAP_SEED, "map": map_i, "roster": roster, "difficulty": Settings.difficulty, "team_size": team_size,
-		"time": float(TIME_OPTIONS[time_pick.selected]) * 60.0, "score": int(SCORE_OPTIONS[score_pick.selected])}
+func _match_cfg(roster: Array, map_i: int, team_size := 2, game_mode := 0, n_teams := 4) -> Dictionary:
+	var gm := clampi(game_mode, 0, Defs.MODE_NAMES.size() - 1)
+	var scores: Array = Defs.MODE_SCORES[gm]
+	return _with_atmos(map_i, {"seed": MAP_SEED, "map": map_i, "roster": roster, "difficulty": Settings.difficulty, "team_size": team_size,
+		"time": float(TIME_OPTIONS[time_pick.selected]) * 60.0, "score": int(scores[score_pick.selected]),
+		"mode": gm, "teams": 2 if n_teams == 2 else 4})
+
+
+## Weather + time of day: the host resolves "Random" here, so every client gets the same "weather" / "tod" ints.
+func _with_atmos(map_i: int, cfg: Dictionary) -> Dictionary:
+	var lan := Net.online and Net.is_host()
+	var wp: OptionButton = lobby_weather if lan else weather_pick
+	var tp: OptionButton = lobby_tod if lan else tod_pick
+	var rng := RandomNumberGenerator.new()
+	rng.randomize()
+	var theme := int(MapData.MAPS[clampi(map_i, 0, MapData.MAPS.size() - 1)].theme)
+	cfg["weather"] = Atmos.resolve_weather(Atmos.arg_override("weather", wp.selected - 1), theme, rng)
+	cfg["tod"] = Atmos.resolve_tod(Atmos.arg_override("tod", tp.selected - 1), rng)
+	return cfg
+
+
+func _weather_picker(parent: Node) -> OptionButton:
+	var ob := OptionButton.new()
+	ob.add_item("Weather: Random")
+	for n in Atmos.WEATHER_NAMES:
+		ob.add_item("Weather: " + str(n))
+	parent.add_child(ob)
+	return ob
+
+
+func _tod_picker(parent: Node) -> OptionButton:
+	var ob := OptionButton.new()
+	ob.add_item("Time: Random")
+	for n in Atmos.TOD_NAMES:
+		ob.add_item("Time: " + str(n))
+	parent.add_child(ob)
+	return ob
+
+
+## Game mode changed in the menu: relabel the score limits (points / captures / kills).
+func _on_mode_picked(i: int) -> void:
+	if score_pick == null:
+		return
+	var scores: Array = Defs.MODE_SCORES[clampi(i, 0, Defs.MODE_SCORES.size() - 1)]
+	for k in scores.size():
+		var sc: int = scores[k]
+		score_pick.set_item_text(k, "no score limit" if sc > 99999 else "first to %d %s" % [sc, Defs.MODE_UNITS[i]])
 
 
 func _start_local(m: String) -> void:
 	var roster: Array = [{"pid": 1, "peer": 1, "name": _player_name(), "team": 0, "loadout": loadout.duplicate(), "vehicle": vehicle_pick.selected}]
-	var ts: int = 4 if size_pick.selected == 1 else 2
+	var n_teams: int = 2 if ai_pick.selected == 1 else 4
+	# total players is fixed (16 or 8); 1v1 makes big teams, 1v1v1v1 small ones
+	var ts: int = (8 if size_pick.selected == 1 else 16) / n_teams
 	if m == "coop":
 		roster.append({"pid": 2, "peer": 1, "name": "Player 2", "team": 0, "loadout": [Defs.W_SMG, Defs.W_PISTOL, Defs.EQ_MEDKIT]})
 		_add_bots(roster, 0, ts - 2)
 	elif mate_check.button_pressed:
 		_add_bots(roster, 0, ts - 1)
-	var ai_teams: int = [3, 2, 1, 0][ai_pick.selected]
-	for t in range(1, 1 + ai_teams):
+	for t in range(1, n_teams):
 		_add_bots(roster, t, ts)
-	_begin(_match_cfg(roster, _picked_map(map_pick), ts), true, m)
+	_begin(_match_cfg(roster, _picked_map(map_pick), ts, mode_pick.selected, n_teams), true, m)
 
 
 func _on_host() -> void:
@@ -824,6 +939,8 @@ func _on_host() -> void:
 	lobby_info.text = "Hosting on port %s - friends find this game under JOIN LAN GAME (LAN and Hamachi).\nYour addresses for direct connect: %s" % [port_edit.text, Net.Discovery.describe_addresses()]
 	lobby_info.autowrap_mode = TextServer.AUTOWRAP_WORD
 	lobby_map.select(map_pick.selected)
+	lobby_weather.select(weather_pick.selected)
+	lobby_tod.select(tod_pick.selected)
 	_push_lobby_cfg()
 	_show(St.LOBBY)
 	_on_lobby_changed()
@@ -831,7 +948,12 @@ func _on_host() -> void:
 
 func _push_lobby_cfg() -> void:
 	if Net.is_host():
-		Net.lobby_cfg = {"map": lobby_map.selected, "fill": lobby_fill.button_pressed, "size": 4 if lobby_size.selected == 1 else 2}
+		Net.lobby_cfg = {"map": lobby_map.selected, "fill": lobby_fill.button_pressed, "size": (8 if lobby_size.selected == 1 else 16) / (2 if lobby_teams.selected == 1 else 4)}
+		Net.lobby_cfg["weather"] = lobby_weather.selected
+		Net.lobby_cfg["tod"] = lobby_tod.selected
+		Net.lobby_cfg["mode"] = lobby_mode.selected
+		Net.lobby_cfg["teams"] = 2 if lobby_teams.selected == 1 else 4
+		Net.fit_teams()   # players on teams that no longer play move to an active one
 		Net.sync_lobby.rpc(Net.players, Net.lobby_cfg)
 
 
@@ -859,27 +981,66 @@ func _on_lobby_changed() -> void:
 	lobby_map.disabled = not host
 	lobby_fill.disabled = not host
 	lobby_size.disabled = not host
+	lobby_weather.disabled = not host
+	lobby_tod.disabled = not host
+	lobby_mode.disabled = not host
+	lobby_teams.disabled = not host
 	if not host:
 		lobby_map.select(int(Net.lobby_cfg.get("map", 0)))
 		lobby_fill.button_pressed = bool(Net.lobby_cfg.get("fill", true))
-		lobby_size.select(1 if int(Net.lobby_cfg.get("size", 2)) == 4 else 0)
+		lobby_size.select(1 if Net.team_size() * Net.team_count() <= 8 else 0)
+		lobby_weather.select(clampi(int(Net.lobby_cfg.get("weather", 0)), 0, lobby_weather.item_count - 1))
+		lobby_tod.select(clampi(int(Net.lobby_cfg.get("tod", 0)), 0, lobby_tod.item_count - 1))
+		lobby_mode.select(clampi(int(Net.lobby_cfg.get("mode", 0)), 0, Defs.MODE_NAMES.size() - 1))
+		lobby_teams.select(1 if Net.team_count() == 2 else 0)
+	for t in lobby_team_btns.size():
+		(lobby_team_btns[t] as Button).visible = t < Net.team_count()
 	var me_id := multiplayer.get_unique_id()
+	if Net.players.has(me_id) and not lobby_name.has_focus():
+		lobby_name.text = str(Net.players[me_id].name)
 	if Net.players.has(me_id) and lobby_vehicle.selected != int(Net.players[me_id].get("vehicle", 0)):
 		lobby_vehicle.select(int(Net.players[me_id].get("vehicle", 0)))
 		lobby_vehicle_desc.text = Defs.VEHICLES[lobby_vehicle.selected].desc
-	var txt := ""
-	for t in 4:
+	# teammates crew vehicles in pairs (join order): only the 1st, 3rd... player of a team picks the vehicle
+	var my_slot := Net.team_slot(me_id)
+	var picks := my_slot % 2 == 0
+	lobby_vehicle.disabled = not picks
+	if not picks:
+		var leader := Net.slot_player(int(Net.players[me_id].team), my_slot - 1) if Net.players.has(me_id) else -1
+		lobby_vehicle_desc.text = "%s picks your vehicle (you crew it with them)." % (str(Net.players[leader].name) if Net.players.has(leader) else "Your teammate")
+	elif lobby_vehicle_desc.text.ends_with("(you crew it with them)."):
+		lobby_vehicle_desc.text = Defs.VEHICLES[lobby_vehicle.selected].desc
+	var txt := "%s  -  %d teams\n" % [Defs.MODE_NAMES[clampi(int(Net.lobby_cfg.get("mode", 0)), 0, Defs.MODE_NAMES.size() - 1)], Net.team_count()]
+	for t in Net.team_count():
 		var names: Array = []
 		var ids: Array = Net.players.keys()
 		ids.sort()
+		var k := 0
 		for id in ids:
 			if int(Net.players[id].team) == t:
 				var vn: String = Defs.VEHICLES[clampi(int(Net.players[id].get("vehicle", 0)), 0, 4)].name
-				names.append("%s%s [%s]" % [str(Net.players[id].name), " (host)" if int(id) == 1 else "", vn])
+				names.append("%s%s%s" % [str(Net.players[id].name), " (host)" if int(id) == 1 else "", " [%s]" % vn if k % 2 == 0 else ""])
+				k += 1
 		var fill := "  + AI" if lobby_fill.button_pressed and names.size() < Net.team_size() else ""
 		txt += "%s:  %s%s\n" % [Defs.TEAM_NAMES[t], ", ".join(names) if names.size() > 0 else "-", fill]
 	lobby_list.text = txt
 	start_btn.disabled = not host
+
+
+func _on_lobby_name() -> void:
+	var n := lobby_name.text.strip_edges().substr(0, 16)
+	if n == "" or not Net.online:
+		return
+	var me_id := multiplayer.get_unique_id()
+	if Net.players.has(me_id) and str(Net.players[me_id].name) == n:
+		return
+	name_edit.text = n
+	Settings.pname = n
+	Settings.save_settings()
+	if Net.is_host():
+		Net.set_pname(1, n)
+	else:
+		Net.request_name.rpc_id(1, n)
 
 
 func _on_lobby_vehicle(i: int) -> void:
@@ -917,9 +1078,9 @@ func _on_start_lan() -> void:
 		Net.pid_owner[pid] = id
 		pid += 1
 	if lobby_fill.button_pressed:
-		for t in 4:
+		for t in Net.team_count():
 			_add_bots(roster, t, Net.team_size() - int(counts[t]))
-	Net.start_game.rpc(_match_cfg(roster, _picked_map(lobby_map), Net.team_size()))
+	Net.start_game.rpc(_match_cfg(roster, _picked_map(lobby_map), Net.team_size(), int(Net.lobby_cfg.get("mode", 0)), Net.team_count()))
 
 
 func _on_net_game_started(cfg: Dictionary) -> void:
@@ -953,14 +1114,19 @@ func _begin(cfg: Dictionary, authority: bool, m: String) -> void:
 	var map_i := int(cfg.get("map", 0))
 	mapdata = MapData.new()
 	var team_size := int(cfg.get("team_size", 2))
-	mapdata.generate(map_i, int(cfg.seed), team_size)
+	var bunkers_on := int(cfg.get("mode", 0)) == Defs.MODE_HEIST   # bunkers only exist in HEIST
+	mapdata.generate(map_i, int(cfg.seed), team_size, bunkers_on)
+	mapdata.weather = int(cfg.get("weather", 0))
+	mapdata.tod = int(cfg.get("tod", 1))
 	res.map_tex = ImageTexture.create_from_image(_map_image())
 	res.mini_tex = ImageTexture.create_from_image(_mini_image())
 	if authority:
 		# the simulation gets its own copy: the client map shows doors opened only for our team
 		var world_map = MapData.new()
-		world_map.generate(map_i, int(cfg.seed), team_size)
-		world = World.new(world_map, cfg.roster, int(cfg.seed), int(cfg.get("difficulty", 1)), float(cfg.get("time", 600.0)), int(cfg.get("score", 2500)))
+		world_map.generate(map_i, int(cfg.seed), team_size, bunkers_on)
+		world_map.weather = mapdata.weather
+		world_map.tod = mapdata.tod
+		world = World.new(world_map, cfg.roster, int(cfg.seed), int(cfg.get("difficulty", 1)), float(cfg.get("time", 600.0)), int(cfg.get("score", 2500)), int(cfg.get("mode", 0)))
 	var my_peer := multiplayer.get_unique_id() if (m == "host" or m == "client") else 1
 	var devices: Array = ["kbm"]
 	if m == "coop":
@@ -1312,7 +1478,7 @@ func _fx(k: int, p: Vector2, life: float, p2 := Vector2.ZERO, z := -1.0) -> void
 		effects.append({"k": k, "p": p, "p2": p2, "t": 0.0, "life": life, "z": z})
 
 
-const SHOT_SOUNDS := ["knife", "pistol", "revolver", "rifle", "smg", "shotgun", "sniper", "lmg"]
+const SHOT_SOUNDS := ["knife", "pistol", "revolver", "rifle", "smg", "shotgun", "sniper", "lmg", "burst", "dmr", "mpistol", "dbarrel", "rpg"]
 
 
 func _handle_events(ev: PackedFloat32Array) -> void:
@@ -1327,7 +1493,7 @@ func _handle_events(ev: PackedFloat32Array) -> void:
 		var d := lis.distance_to(p)
 		var vol := -d * 0.9
 		if t == Defs.EV_SHOT:
-			Sfx.play(SHOT_SOUNDS[clampi(int(p2.x), 0, 7)], vol - 2.0, randf_range(0.95, 1.05))
+			Sfx.play(SHOT_SOUNDS[clampi(int(p2.x), 0, SHOT_SOUNDS.size() - 1)], vol - 2.0, randf_range(0.95, 1.05))
 		elif t == Defs.EV_MG:
 			Sfx.play("mg", vol - 4.0, randf_range(0.92, 1.08))
 		elif t == Defs.EV_ENEMY_SHOT:
@@ -1431,7 +1597,28 @@ func _shake(p: Vector2, radius: float, amount: float) -> void:
 			lp.shake = maxf(lp.shake, amount * (1.0 - d / radius))
 
 
+## Menus are laid out for 1600x900 and scaled to fit any window (crisp, canvas-items stretch) times the
+## UI scale option. While actually playing, stretching is off so the 3D view keeps its full resolution
+## (the HUD sizes itself from the window and Settings.ui_scale).
+func _apply_ui_scale() -> void:
+	var playing: bool = state == St.GAME and not pause_root.visible and not options_root.visible
+	var key := "%s|%.2f" % [playing, Settings.ui_scale]
+	if key == ui_key or shot_path != "" and shot_mode != "menu":
+		return
+	ui_key = key
+	var w := get_window()
+	if playing:
+		w.content_scale_mode = Window.CONTENT_SCALE_MODE_DISABLED
+		w.content_scale_factor = 1.0
+	else:
+		w.content_scale_size = Vector2i(1600, 900)
+		w.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_EXPAND
+		w.content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
+		w.content_scale_factor = clampf(Settings.ui_scale, 0.8, 1.25)
+
+
 func _process(delta: float) -> void:
+	_apply_ui_scale()
 	if state != St.GAME:
 		if shot_path != "" and shot_mode == "menu":
 			_shot_step()
@@ -1467,7 +1654,8 @@ func _process(delta: float) -> void:
 				# recoil climbs the view a little (heavier guns kick harder)
 				if int(rec.role) == Defs.ROLE_FOOT and lp.device == "kbm":
 					var rk: float = {Defs.W_PISTOL: 0.012, Defs.W_REVOLVER: 0.03, Defs.W_RIFLE: 0.009, Defs.W_SMG: 0.006,
-						Defs.W_SHOTGUN: 0.04, Defs.W_SNIPER: 0.05, Defs.W_LMG: 0.008}.get(int(rec.w), 0.0)
+						Defs.W_SHOTGUN: 0.04, Defs.W_SNIPER: 0.05, Defs.W_LMG: 0.008, Defs.W_BURST: 0.008, Defs.W_DMR: 0.022,
+						Defs.W_MPISTOL: 0.005, Defs.W_DBARREL: 0.05, Defs.W_RPG: 0.06}.get(int(rec.w), 0.0)
 					lp.pitch = minf(0.95, lp.pitch + rk * (0.5 if lp.ads else 1.0))
 			lp.last_shots = sh
 			var role := int(rec.role)
@@ -1494,7 +1682,7 @@ func _shot_step() -> void:
 		return
 	if shot_frames == 3 and world != null:
 		var p = world.players[1]
-		var b0: Dictionary = mapdata.bunkers[0]
+		var b0: Dictionary = mapdata.bunkers[0] if mapdata.bunkers.size() > 0 else {"bx": int(mapdata.W / 2) - 12, "by": 12}
 		var o := Vector2(b0.bx, b0.by)
 		if shot_mode in ["foot", "ads", "sprint"]:
 			world._exit_tank(p)
@@ -1572,10 +1760,8 @@ func _shot_step() -> void:
 				pz.idx = 1
 				pz.v = 17.0
 				pz.lastdir = -1
-			if ty == Defs.PZ_MEMORY:
-				pz.phase = 1
-				pz.cx = 2
-				pz.cy = 1
+			if ty == Defs.PZ_TIMING:
+				pz.hits = 1
 			world.bstate[1].pz[0] = pz
 			p.pos = b1.terminals[0]
 			p.puzzle = 0
@@ -1593,6 +1779,8 @@ func _shot_step() -> void:
 			p.epoch += 1
 		elif shot_mode.begins_with("veh"):
 			# --shotmode=vehN : sit in the team vehicle, which is changed to type N, next to an enemy vehicle
+			if p.tank == null:
+				world._enter_tank(p, world._slot_tank(p))
 			var vt := int(shot_mode.substr(3))
 			for t in world.tanks:
 				t.vtype = vt
@@ -1620,7 +1808,22 @@ func _shot_step() -> void:
 					t.turret = t.hull + 1.2
 					k += 1
 			world._resync_tank(p.tank)
+		elif shot_mode == "ctf" and not world.flags.is_empty():
+			# --shotmode=ctf:MAP:PRI:SIZE:1:TEAMS : carrying an enemy flag home, looking at our own flag
+			world._exit_tank(p)
+			var fh: Vector2 = world.flags[0].home
+			for ft in world.flags:
+				if int(ft) != 0:
+					world.flags[ft].st = 1
+					world.flags[ft].car = p.id
+					break
+			var cdir: Vector2 = (Vector2(mapdata.W, mapdata.H) * 0.5 - fh).normalized()
+			p.pos = fh + cdir.orthogonal() * 3.5
+			p.yaw = (fh - p.pos).angle()
+			p.epoch += 1
 		elif shot_mode == "tank":
+			if p.tank == null:
+				world._enter_tank(p, world._slot_tank(p))
 			p.tank.pos = o + Vector2(11.5, 28.5)
 			p.tank.turret = -PI * 0.5
 			p.tank.hull = -PI * 0.5
