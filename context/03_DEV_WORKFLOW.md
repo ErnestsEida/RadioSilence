@@ -51,3 +51,13 @@ Project setting `rendering/textures/vram_compression/import_etc2_astc=true` is r
 - PowerShell `[IO.File]` calls ignore `cd` (use absolute paths). Don't `Stop-Process` all Godot processes
   (denied by the user's auto-mode policy) — kill only processes you started (`Start-Process -PassThru`).
 - Performance budget: 60 FPS at 1080p on a GTX 1660 Ti (raycast view at 1/Settings.pixel resolution).
+
+## Release checklist (every release - REQUIRED)
+1. Bump the version (`project.godot` config/version and the "Version x.y" line in the `docs/index.html` hero).
+2. **Write a changelog entry and ADD it to the GitHub Pages site** (`docs/index.html`, section `#changelog`):
+   insert a new `<div class="release">` block at the TOP of `.changelog`, move the `latest` class + `LATEST` tag to it.
+   The changelog is **append-only** - never delete or rewrite older entries; it is the history of the game.
+3. Re-export Windows / Linux / macOS. **Every release gets its own subfolder: `export/v<version>/`** (e.g. `export/v1.2/`)
+   holding `RadioSilence-{Windows,Linux,macOS}.zip`. Never overwrite an older version's folder. Zip names must stay
+   the same in every folder - the download buttons use `releases/latest/download/<zip>`.
+4. Update `docs/` text/screenshots if features changed; user pushes and publishes a full (non-pre-release) GitHub release.

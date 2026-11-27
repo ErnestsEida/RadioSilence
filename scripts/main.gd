@@ -151,6 +151,7 @@ func _ready() -> void:
 	add_child(icons)
 	await icons.bake(not OS.get_cmdline_user_args().has("--rebake-icons"))
 	icons.queue_free()
+	_add_ground_weapons()
 	_build_ui()
 	Net.lobby_changed.connect(_on_lobby_changed)
 	Net.game_started.connect(_on_net_game_started)
@@ -177,6 +178,28 @@ func _ready() -> void:
 			_start_local("coop" if shot_mode == "coop" else "solo")
 		else:
 			_on_map_picked(map_pick.selected)
+
+
+## Dropped guns in the world use the baked side-view weapon icons, shrunk into their sprite frames.
+func _add_ground_weapons() -> void:
+	var stex: ImageTexture = res.sprite_tex
+	var simg: Image = stex.get_image()
+	for w in range(1, Defs.FR_WEAPONS.size()):
+		var ic: Texture2D = WeaponIcons.weapon(w)
+		if ic == null:
+			continue
+		var im: Image = ic.get_image()
+		if im == null or im.get_width() < 4:
+			continue
+		im.convert(Image.FORMAT_RGBA8)
+		var tw := 62
+		var th := maxi(4, int(62.0 * float(im.get_height()) / float(im.get_width())))
+		im.resize(tw, th, Image.INTERPOLATE_BILINEAR)
+		var fr: int = int(Defs.FR_WEAPONS[w])
+		simg.blend_rect(im, Rect2i(0, 0, tw, th), Vector2i((fr % 16) * 64 + 1, (fr / 16) * 64 + 62 - th))
+	stex.update(simg)
+	if OS.get_cmdline_user_args().has("--dump-atlas"):
+		simg.save_png("res://tools/preview_out/atlas.png")
 
 
 # ---------------------------------------------------------------- UI
@@ -862,7 +885,7 @@ func _player_name() -> String:
 func _add_bots(roster: Array, team: int, count: int) -> void:
 	for i in count:
 		var pid := 100 + roster.size()
-		roster.append({"pid": pid, "peer": 0, "name": "AI " + Defs.BOT_NAMES[pid % Defs.BOT_NAMES.size()], "team": team, "bot": true})
+		roster.append({"pid": pid, "peer": 0, "name": Defs.BOT_NAMES[pid % Defs.BOT_NAMES.size()], "team": team, "bot": true})
 
 
 func _match_cfg(roster: Array, map_i: int, team_size := 2, game_mode := 0, n_teams := 4) -> Dictionary:
@@ -883,6 +906,12 @@ func _with_atmos(map_i: int, cfg: Dictionary) -> Dictionary:
 	var theme := int(MapData.MAPS[clampi(map_i, 0, MapData.MAPS.size() - 1)].theme)
 	cfg["weather"] = Atmos.resolve_weather(Atmos.arg_override("weather", wp.selected - 1), theme, rng)
 	cfg["tod"] = Atmos.resolve_tod(Atmos.arg_override("tod", tp.selected - 1), rng)
+	if int(cfg.get("mode", 0)) == Defs.MODE_WAR:
+		# a war is fought at dusk or at night, under clear, cloudy or stormy skies
+		if int(cfg.tod) < 2:
+			cfg["tod"] = 2 + rng.randi() % 2
+		if not [0, 1, 3].has(int(cfg.weather)):
+			cfg["weather"] = [0, 1, 3][rng.randi() % 3]
 	return cfg
 
 
@@ -1695,6 +1724,23 @@ func _shot_step() -> void:
 			p.yaw = -PI * 0.5
 			p.epoch += 1
 			locals[0].pitch = 0.45
+		elif shot_mode == "items":
+			# an armor vest and a few dropped guns on open ground in front of the player
+			world._exit_tank(p)
+			for e in world.enemies:
+				e.dead = true
+			var a0: Dictionary = world.armor_spots[0]
+			p.pos = a0.pos + Vector2(-2.6, 0.0)
+			p.yaw = 0.0
+			p.epoch += 1
+			locals[0].pitch = -0.25
+			var k := 0
+			for wid in [Defs.W_SNIPER, Defs.W_SHOTGUN, Defs.W_RPG, Defs.W_LMG]:
+				world._drop_weapon(wid, 5, 10, a0.pos + Vector2(-0.6 + 0.2 * k, -1.1 + 0.75 * k), 0.0)
+				k += 1
+			for it in world.items:
+				if it.k == 4:
+					it.life = 1e6   # the software renderer is slow: keep them for the screenshot
 		elif shot_mode == "tower":
 			# on the team's watchtower, looking down over the field
 			world._exit_tank(p)

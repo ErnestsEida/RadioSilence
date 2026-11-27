@@ -462,6 +462,14 @@ static func run() -> int:
 		_test_mortars()
 		print("RESULT: %s (%d failures)" % ["PASS" if fails == 0 else "FAIL", fails])
 		return 0 if fails == 0 else 1
+	if OS.get_cmdline_user_args().has("--war"):
+		_test_war()
+		print("RESULT: %s (%d failures)" % ["PASS" if fails == 0 else "FAIL", fails])
+		return 0 if fails == 0 else 1
+	if OS.get_cmdline_user_args().has("--items"):
+		_test_items()
+		print("RESULT: %s (%d failures)" % ["PASS" if fails == 0 else "FAIL", fails])
+		return 0 if fails == 0 else 1
 	if OS.get_cmdline_user_args().has("--puzzles"):
 		_test_puzzles()
 		print("RESULT: %s (%d failures)" % ["PASS" if fails == 0 else "FAIL", fails])
@@ -651,6 +659,8 @@ static func run() -> int:
 	_check(b1.keys.has(2) and b2.keys.has(3) and m3.get_wall(bk.doors[0].x, bk.doors[0].y) == MapData.KEYDOOR, "keys back in the owners' hands, doors locked")
 
 	_test_puzzles()
+	_test_items()
+	_test_war()
 
 	print("== movement and bullets")
 	var m4 = MapData.new()
@@ -936,3 +946,139 @@ static func _test_puzzles() -> void:
 			if wp.bstate[tb].sol[0]:
 				break
 		_check(wp.bstate[tb].sol[0], "AI solved %s in %.0f s" % [Defs.PUZZLES[ty].name, secs])
+
+
+static func _test_items() -> void:
+	print("== armor vests and dropped weapons")
+	var m = MapData.new()
+	m.generate(0, SEED)
+	var w = World.new(m, [{"pid": 1, "peer": 1, "name": "A", "team": 0}, {"pid": 2, "peer": 0, "name": "B", "team": 1}], SEED)
+	_quiet(w)
+	var a = w.players[1]
+	var b = w.players[2]
+	w._exit_tank(a)
+	w._exit_tank(b)
+	var vests := 0
+	for it in w.items:
+		if it.k == 3:
+			vests += 1
+	_check(w.armor_spots.size() >= 8 and vests == w.armor_spots.size(), "%d armor vests placed on open ground" % vests)
+	var spot: Vector2 = w.armor_spots[0].pos
+	a.pos = spot
+	_steps(w, 2, 1)
+	_check(a.armor >= 99.0, "walking over a vest gives 100 armor")
+	var hp0: float = a.hp
+	w._damage(a, 50.0, b, false)
+	_check(is_equal_approx(a.hp, hp0 - 20.0) and is_equal_approx(a.armor, 70.0), "armor soaks 60%% of a hit (hp %.0f, armor %.0f)" % [a.hp, a.armor])
+	var back := false
+	for i in int((w.ARMOR_RESPAWN + 2.0) / DT):
+		w.step(DT)
+		for it in w.items:
+			if it.k == 3 and int(it.spot) == 0:
+				back = true
+		if back:
+			break
+	_check(back, "vest respawns after %.0f s" % w.ARMOR_RESPAWN)
+	# B dies -> drops primary; A swaps for it with [use]
+	b.primary = Defs.W_SNIPER
+	b.mags[Defs.W_SNIPER] = 3
+	b.res[Defs.W_SNIPER] = 10
+	a.primary = Defs.W_RIFLE
+	a.weapon = Defs.W_RIFLE
+	b.pos = a.pos + Vector2(2.0, 0.0)
+	w._kill_player(b, a)
+	var drop = null
+	for it in w.items:
+		if it.k == 4 and int(it.wpn) == Defs.W_SNIPER:
+			drop = it
+	_check(drop != null, "killed enemy drops their primary (sniper)")
+	if drop != null:
+		a.pos = drop.pos
+		_steps(w, 1, 1)
+		_check(a.hint == Defs.H_WEAPON and a.hw == Defs.W_SNIPER, "pick-up hint shows the sniper")
+		_press_use(w, 1)
+		var old_dropped := false
+		for it in w.items:
+			if it.k == 4 and int(it.wpn) == Defs.W_RIFLE:
+				old_dropped = true
+		_check(a.primary == Defs.W_SNIPER and a.weapon == Defs.W_SNIPER and int(a.mags[Defs.W_SNIPER]) == 3 and old_dropped, "swapped rifle for sniper with its ammo; rifle left on the ground")
+	var left := 0
+	for i in int((w.WEAPON_DROP_LIFE + 0.5) / DT):
+		w.set_input(1, _inp(a))
+		w.step(DT)
+	for it in w.items:
+		if it.k == 4:
+			left += 1
+	_check(left == 0, "dropped guns vanish after %.1f s (1.5x respawn)" % w.WEAPON_DROP_LIFE)
+
+
+static func _test_war() -> void:
+	print("== WAR simulator: capture points, scoring, no vehicle respawn")
+	var m = MapData.new()
+	m.generate(0, SEED, 2, false)
+	var w = World.new(m, [{"pid": 1, "peer": 1, "name": "A", "team": 0}, {"pid": 2, "peer": 1, "name": "B", "team": 1}], SEED, 1, 900.0, 150, Defs.MODE_WAR)
+	_quiet(w)
+	var a = w.players[1]
+	var b = w.players[2]
+	w._exit_tank(a)
+	w._exit_tank(b)
+	var distinct: bool = w.cpoints.size() == 3 and w.cpoints[0].pos.distance_to(w.cpoints[1].pos) > 20.0 and w.cpoints[1].pos.distance_to(w.cpoints[2].pos) > 20.0
+	var open := true
+	for cp in w.cpoints:
+		if m.circle_blocked(cp.pos, 1.0, {}, 0.0):
+			open = false
+	_check(distinct and open, "3 capture points, spread out on open ground")
+	var veh := 0
+	for t in w.tanks:
+		if t.team == 0:
+			veh += 1
+	_check(veh >= 4, "WAR fleet: %d vehicles per team at the start" % veh)
+	b.pos = Vector2(5, 5)
+	var cpA: Dictionary = w.cpoints[0]
+	a.pos = cpA.pos
+	var secs := 0.0
+	while int(cpA.owner) != 0 and secs < 30.0:
+		w.set_input(1, _inp(a))
+		w.set_input(2, _inp(b))
+		w.step(DT)
+		secs += DT
+	_check(int(cpA.owner) == 0 and secs > 12.0 and secs < 17.0, "one soldier captures a neutral point in %.1f s" % secs)
+	# contested: B joins -> frozen
+	b.pos = cpA.pos + Vector2(1, 0)
+	a.pos = Vector2(4, 4)
+	var t0: float = float(cpA.prog)
+	_steps(w, 60, 2)
+	_check(float(cpA.prog) < t0, "an enemy alone on the point drains it")
+	a.pos = cpA.pos + Vector2(-1, 0)
+	var t1: float = float(cpA.prog)
+	_steps(w, 60, 1)
+	_check(is_equal_approx(float(cpA.prog), t1), "both teams on the point: contested, progress frozen")
+	b.pos = Vector2(5, 5)
+	_steps(w, 120, 1)
+	var sc0: int = int(w.teams[0].score)
+	for i in int(10.5 / DT):
+		w.step(DT)
+	_check(int(w.teams[0].score) >= sc0 + 2, "a held point scores every 5 s (%d -> %d)" % [sc0, int(w.teams[0].score)])
+	# respawn at the held point
+	w._kill_player(a, null)
+	w._respawn(a)
+	_check(a.pos.distance_to(cpA.pos) < 6.0, "respawn at the team's held point")
+	# vehicles never come back
+	var tk = w.tanks[0]
+	w._destroy_tank(tk, null)
+	for i in int(40.0 / DT):
+		w.step(DT)
+	_check(not tk.alive, "destroyed vehicles stay destroyed (no respawn)")
+	# AI teams fight over the points
+	print("== WAR: 2 AI teams of 4 for 6 sim minutes")
+	var mb = MapData.new()
+	mb.generate(1, SEED, 4, false)
+	var wb = World.new(mb, _bots(2, 4), SEED, 1, 900.0, 150, Defs.MODE_WAR)
+	wb.evt_next = 1e9
+	var taken := {}
+	for i in int(360.0 / DT):
+		wb.step(DT)
+		for cp in wb.cpoints:
+			if int(cp.owner) >= 0:
+				taken[wb.cpoints.find(cp)] = true
+	_check(taken.size() >= 2, "AI captured %d of 3 points; scores %d : %d" % [taken.size(), int(wb.teams[0].score), int(wb.teams[1].score)])

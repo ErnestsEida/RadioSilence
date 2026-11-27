@@ -157,6 +157,17 @@ h2 small { display: block; font: 600 13px/1.4 Inter; letter-spacing: 3px; color:
 .lightbox.on { display: flex; }
 .lightbox img { max-height: 92vh; border: 1px solid var(--line); }
 
+/* ---------- changelog (append-only, newest first) */
+.changelog { display: grid; gap: 16px; }
+.release { background: var(--panel); border: 1px solid var(--line); padding: 20px 24px; }
+.release.latest { border-color: var(--amber); }
+.rel-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 8px; }
+.rel-head b { font-family: Oswald, sans-serif; font-size: 24px; color: var(--amber); letter-spacing: .04em; }
+.rel-head span { color: #9a9a8a; font-size: 14px; }
+.rel-head em { font-style: normal; font-size: 11px; font-weight: 600; letter-spacing: .12em; background: var(--amber); color: #111; padding: 2px 7px; }
+.release ul { margin: 0; padding-left: 20px; line-height: 1.6; }
+.release li { margin: 3px 0; }
+.release kbd { font-size: 12px; }
 /* ---------- download */
 .downloads { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; }
 .dl {
@@ -204,11 +215,11 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space
 	<div class="wrap">
 		<a class="logo" href="#top">RADIO SILENCE</a>
 		<div class="links">
-			<a href="#new">What's new</a>
 			<a href="#how">How it plays</a>
 			<a href="#features">Features</a>
 			<a href="#screens">Screenshots</a>
 			<a href="#controls">Controls</a>
+			<a href="#changelog">Changelog</a>
 			<a class="cta" href="#download" style="color: var(--amber)">Download</a>
 		</div>
 	</div>
@@ -230,37 +241,9 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space
 			</a>
 			<a class="btn ghost" href="#screens">See it in action</a>
 		</div>
-		<div class="meta">Version 1.1 &middot; Solo, split-screen co-op &amp; LAN up to 16 players &middot; No install needed</div>
+		<div class="meta">Version 1.2 &middot; Solo, split-screen co-op &amp; LAN up to 16 players &middot; No install needed</div>
 	</div>
 </header>
-
-<section class="alt" id="new">
-<div class="wrap">
-<h2><small>VERSION 1.1</small>What's new</h2>
-<div class="two">
-<div class="panel">
-<h3>Gameplay</h3>
-<ul>
-<li>Game modes: Heist, Capture the Flag, Team Deathmatch - 2 or 4 teams.</li>
-<li>Weather and time of day: rain, storms, fog, snow, dust storms, dusk and night with headlights.</li>
-<li>Puzzles reworked: easier, no memorising, 3 new skill terminals, fully random per bunker.</li>
-<li>Heist keys are shared - any teammate can open a door, and the HUD shows who carries which key.</li>
-<li>5 new weapons incl. rocket launcher; medkits heal teammates; mortar barrages.</li>
-</ul>
-</div>
-<div class="panel">
-<h3>Interface</h3>
-<ul>
-<li>Teammate name tags and health bars.</li>
-<li>Smaller game log with your name in bold; UI scale and log size options.</li>
-<li>Menus scale to any screen - 720p to 4K.</li>
-<li>Change your name in the LAN lobby.</li>
-<li>Soldiers visibly crouch and jump.</li>
-</ul>
-</div>
-</div>
-</div>
-</section>
 
 <section id="how">
 	<div class="wrap">
@@ -396,6 +379,55 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space
 			</div>
 		</div>
 	</div>
+</section>
+
+<section class="alt" id="changelog">
+<div class="wrap">
+<h2><small>PATCH NOTES</small>Changelog</h2>
+<p class="sub">Every release, newest first.</p>
+<!--
+	CHANGELOG RULES (keep the history!):
+	- For every new release ADD a new <div class="release"> block at the TOP of .changelog.
+	- Move the "latest" class + <em>LATEST</em> tag to the new block.
+	- NEVER delete or rewrite older entries - this list is the project's history.
+	- Also bump the "Version x.y" line in the hero.
+-->
+<div class="changelog">
+
+<div class="release latest">
+<div class="rel-head"><b>v1.2</b><span>2026-11-27</span><em>LATEST</em></div>
+<ul>
+<li><b>Armor vests</b> lie around every map. Walk over one for 100 armor - it soaks 60% of incoming damage until it's used up. Vests respawn 40 s after pickup.</li>
+<li><b>Pick up enemy weapons:</b> fallen soldiers drop their primary weapon (bunker guards drop rifles). Press <kbd>E</kbd> to swap - it replaces your primary or sidearm with the ammo that was left in it. Drops last 10.5 s (1.5x the respawn time) and blink before they vanish.</li>
+<li>AI soldiers are now named after AI models: Opus, Fable, Gemini, Sonnet, Haiku, Mythos, GPT, Llama, Mistral, Grok and more.</li>
+<li>Armor bar on the HUD above your health.</li>
+</ul>
+</div>
+
+<div class="release">
+<div class="rel-head"><b>v1.1</b><span>2026-11-26</span></div>
+<ul>
+<li>Game modes: Heist, Capture the Flag, Team Deathmatch - 2 or 4 teams.</li>
+<li>Weather and time of day: rain, storms, fog, snow, dust storms, dusk and night with headlights.</li>
+<li>Puzzles reworked: easier, no memorising, 3 new skill terminals (timing lock, steady hand, pressure pump), fully random per bunker.</li>
+<li>Heist keys are shared - any teammate can open a door, and the HUD shows who carries which key.</li>
+<li>5 new weapons incl. rocket launcher; medkits heal teammates; mortar barrages.</li>
+<li>Teammate name tags and health bars; smaller game log with your name in bold; UI scale and log size options.</li>
+<li>Menus scale to any screen - 720p to 4K. Change your name in the LAN lobby. Soldiers visibly crouch and jump.</li>
+</ul>
+</div>
+
+<div class="release">
+<div class="rel-head"><b>v1.0</b><span>2026-11-25</span></div>
+<ul>
+<li>First public release: 4 teams, 4 bunkers, keys, puzzle rooms, vaults and loot.</li>
+<li>5 vehicles, base mortars, random events, 8 maps with 4 base layouts.</li>
+<li>Solo, split-screen co-op and LAN / Hamachi multiplayer up to 16 players.</li>
+</ul>
+</div>
+
+</div>
+</div>
 </section>
 
 <footer>

@@ -351,6 +351,7 @@ static func make_sprites() -> ImageTexture:
 	for k in 3:
 		_put(atlas, Defs.FR_TERMINAL + k, _terminal(k))
 	_put(atlas, Defs.FR_AMMO, _ammo_crate())
+	_put(atlas, Defs.FR_ARMOR, _armor_vest())
 	for vt in range(1, 5):
 		for t in 4:
 			var tc: Color = Defs.TEAM_COLORS[t]
@@ -1133,6 +1134,34 @@ static func _terminal(k: int) -> Image:
 		_line(img, Vector2(30, 25), Vector2(41, 12), 2, Color(0.4, 1.0, 0.5))
 	for i in 4:
 		_r(img, 16 + i * 9, 40, 6, 4, [Color(0.9, 0.2, 0.2), Color(0.9, 0.8, 0.2), Color(0.2, 0.8, 0.3), Color(0.3, 0.5, 0.9)][i])
+	return img
+
+
+## Plate carrier vest: dark kevlar body, shoulder straps, neck cut, two magazine pouches, a lighter armour plate.
+static func _armor_vest() -> Image:
+	var img := _new()
+	var k := Color(0.2, 0.25, 0.3)
+	var kd := k.darkened(0.35)
+	# body (front panel with a neck cut-out)
+	_poly(img, [Vector2(14, 22), Vector2(24, 22), Vector2(32, 30), Vector2(40, 22), Vector2(50, 22), Vector2(52, 60), Vector2(12, 60)], k, 0.2)
+	# shoulder straps
+	_r(img, 14, 14, 9, 10, kd)
+	_r(img, 41, 14, 9, 10, kd)
+	# armour plate
+	_poly(img, [Vector2(20, 32), Vector2(44, 32), Vector2(43, 47), Vector2(21, 47)], Color(0.38, 0.45, 0.52), 0.15)
+	_r(img, 22, 34, 20, 2, Color(0.55, 0.62, 0.7))
+	# pouches with mags
+	for i in 3:
+		_r(img, 15 + i * 12, 49, 10, 9, Color(0.27, 0.31, 0.24))
+		_r(img, 17 + i * 12, 46, 6, 4, GUN)
+		_r(img, 15 + i * 12, 49, 10, 2, Color(0.34, 0.38, 0.3))
+	# side straps + buckles
+	_r(img, 12, 40, 3, 12, kd)
+	_r(img, 49, 40, 3, 12, kd)
+	_r(img, 12, 44, 3, 3, Color(0.6, 0.6, 0.55))
+	_r(img, 49, 44, 3, 3, Color(0.6, 0.6, 0.55))
+	# shield badge
+	_poly(img, [Vector2(28, 37), Vector2(36, 37), Vector2(36, 41), Vector2(32, 45), Vector2(28, 41)], Color(0.35, 0.75, 1.0))
 	return img
 
 

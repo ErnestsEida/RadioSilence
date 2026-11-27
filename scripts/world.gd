@@ -17,6 +17,9 @@ const TANK_HP := 500.0
 const GATE_HP := 300.0
 const TANK_RESPAWN := 25.0
 const PLAYER_RESPAWN := 7.0
+const WEAPON_DROP_LIFE := PLAYER_RESPAWN * 1.5   # dropped guns stay this long
+const ARMOR_RESPAWN := 40.0
+const ARMOR_ABSORB := 0.6                        # share of each hit the vest soaks up
 const CANNON_CD := 2.2
 const BASE_SPEED := 3.3
 const SPRINT_MULT := 1.5
@@ -117,10 +120,13 @@ class Player:
 	var ammo_cd := 0.0
 	var burst_left := 0   # rounds still to come in the current burst (burst rifle)
 	var heal_id := -1     # teammate a medkit would heal right now (H_HEAL hint)
+	var armor := 0.0      # 0..100, soaks ARMOR_ABSORB of incoming damage
+	var hw := -1          # weapon id of a dropped gun in reach (H_WEAPON hint)
 	var bot = null
 
 
 class Bot:
+	var seat_t := 0.0     # cooldown between seat swaps (alone in a vehicle: drive OR shoot)
 	var use_c := 0
 	var seat_c := 0
 	var wseq := 0
@@ -293,7 +299,7 @@ var flags := {}   # ctf: team -> {"home": Vector2, "pos": Vector2, "z", "st" (0 
 
 func _init(p_map, roster: Array, seed_val: int, p_difficulty := 1, p_time := 900.0, p_score := 2500, p_mode := 0) -> void:
 	map = p_map
-	mode = clampi(p_mode, 0, 2)
+	mode = clampi(p_mode, 0, Defs.MODE_NAMES.size() - 1)
 	difficulty = clampi(p_difficulty, 0, 2)
 	time_limit = p_time
 	score_limit = p_score
@@ -327,6 +333,8 @@ func _init(p_map, roster: Array, seed_val: int, p_difficulty := 1, p_time := 900
 		var ti := int(t)
 		# one 2-seat vehicle per pair of players: 2 per team in 4-player teams
 		var nveh := maxi(1, (int(members[ti]) + 1) / 2)
+		if mode == Defs.MODE_WAR:
+			nveh = clampi(int(members[ti]) + 2, 4, 10)   # WAR: big fleet up front, vehicles never respawn
 		for k in nveh:
 			var tk := Tank.new()
 			tk.id = 1000 + ti + k * 100
@@ -407,6 +415,7 @@ func _init(p_map, roster: Array, seed_val: int, p_difficulty := 1, p_time := 900
 			_spawn_vault_loot(b, false)
 		items.append(_loot_item(4, map.bunkers[b].vault_center, b))
 	_pick_team_targets()
+	_place_armor()
 	evt_next = rng.randf_range(70.0, 110.0)
 	if mode == Defs.MODE_CTF:
 		for t in teams:
@@ -415,6 +424,9 @@ func _init(p_map, roster: Array, seed_val: int, p_difficulty := 1, p_time := 900
 		_msg("CAPTURE THE FLAG: steal an enemy flag and bring it to YOUR flag at your camp. Carriers can't use vehicles!")
 	elif mode == Defs.MODE_TDM:
 		_msg("TEAM DEATHMATCH: every enemy kill scores (vehicles count double). First to %d kills wins!" % score_limit)
+	elif mode == Defs.MODE_WAR:
+		_place_points()
+		_msg("WAR: capture and hold points A, B and C. Every held point scores. Destroyed vehicles are gone for good!")
 	else:
 		_msg("Each team owns a bunker. Kill enemies for their KEYS - their keys open THEIR bunker. Defend yours!")
 
@@ -469,6 +481,8 @@ func step(dt: float) -> void:
 		_update_enemy(e, dt)
 	if mode == Defs.MODE_CTF:
 		_update_flags(dt)
+	elif mode == Defs.MODE_WAR:
+		_update_points(dt)
 	_update_world(dt)
 	_update_events(dt)
 	if int(elapsed) % 5 == 0 and int(elapsed - dt) % 5 != 0:
@@ -521,6 +535,10 @@ func snapshot() -> Dictionary:
 	for it in items:
 		if it.k == 2:
 			_pack(Defs.E_DROP, it.pos, 0.0, -1, 0, 1.0, 0.0, it.id)
+		elif it.k == 3:
+			_pack(Defs.E_ARMOR, it.pos, 0.0, -1, 0, 1.0, float(it.get("z", 0.0)), it.id)
+		elif it.k == 4:
+			_pack(Defs.E_WEAPON, it.pos, 0.0, -1, int(it.wpn), clampf(float(it.life) / WEAPON_DROP_LIFE, 0.0, 1.0), float(it.get("z", 0.0)), it.id)
 		elif it.k == 0:
 			_pack(Defs.E_KEY, it.pos, 0.0, int(keys[it.key].team) if keys.has(it.key) else -1, 0, 1.0, float(it.get("z", 0.0)), it.id)
 		else:
@@ -533,6 +551,9 @@ func snapshot() -> Dictionary:
 		if int(t) < map.camp_ammo.size():
 			_pack(Defs.E_AMMO, map.camp_ammo[int(t)], 0.0, int(t), 0, 1.0, 0.0, 0)
 	var fls: Array = []
+	for i in cpoints.size():
+		var cpd: Dictionary = cpoints[i]
+		_pack(Defs.E_POINT, cpd.pos, 0.0, int(cpd.owner), int(cpd.cap) + 1, float(cpd.prog), float(i), 0)
 	for ft in flags:
 		var f: Dictionary = flags[ft]
 		_pack(Defs.E_FLAG, f.pos, 0.0, int(ft), int(f.st), 1.0, float(f.z), 0)
@@ -570,6 +591,8 @@ func snapshot() -> Dictionary:
 			"ads": p.ads, "own_key": p.keys.has(p.id), "stolen": stolen})
 		(pl.back() as Dictionary)["mortar"] = _mortar_user(p)
 		(pl.back() as Dictionary)["hid"] = p.heal_id
+		(pl.back() as Dictionary)["ar"] = p.armor
+		(pl.back() as Dictionary)["hw"] = p.hw if p.alive and p.tank == null else -1
 	var dyn := PackedInt32Array()
 	for g in gates:
 		for c in g.cells:
@@ -596,7 +619,8 @@ func snapshot() -> Dictionary:
 	events = PackedFloat32Array()
 	return {"t": elapsed, "e": _ents, "p": pl, "dyn": dyn, "ev": ev, "msg": messages.duplicate(),
 		"alert": alerts.duplicate(), "teams": ts, "bunkers": bs, "tl": maxf(0.0, time_limit - elapsed), "lim": score_limit,
-		"win": winner, "over": over, "nkeys": keys.size(), "evt": evt.duplicate(), "mortar": _mortar_snap(), "mode": mode, "flags": fls}
+		"win": winner, "over": over, "nkeys": keys.size(), "evt": evt.duplicate(), "mortar": _mortar_snap(), "mode": mode, "flags": fls,
+		"cp": _points_snap(), "hold3": hold_all}
 
 
 # ---------------------------------------------------------------- helpers
@@ -651,9 +675,7 @@ func _role(p) -> int:
 		return Defs.ROLE_DEAD
 	if p.tank == null:
 		return Defs.ROLE_FOOT
-	var t = p.tank
-	if t.driver == null or t.gunner == null:
-		return Defs.ROLE_SOLO
+	# a crew member is EITHER the driver OR the gunner - even alone (switch seats with F)
 	return Defs.ROLE_DRIVER if p.seat == 0 else Defs.ROLE_GUNNER
 
 
@@ -854,6 +876,9 @@ func _drop_keys(p) -> void:
 func _respawn(p) -> void:
 	var s: Vector3 = map.team_spawns[p.team]
 	var base := Vector2(s.x, s.y)
+	var fp := _war_spawn_point(p.team)
+	if fp != Vector2.INF:
+		base = fp
 	p.pos = base
 	# every team member gets their own spot on a ring around the camp (no stacking on one point),
 	# on the side away from the map edge; skip spots that are blocked or already taken
@@ -1359,6 +1384,10 @@ func _damage(t, dmg: float, attacker, explosive: bool) -> void:
 	elif t.ttype == 1:
 		if not t.alive:
 			return
+		if t.armor > 0.0:
+			var soak: float = minf(t.armor, dmg * ARMOR_ABSORB)
+			t.armor -= soak
+			dmg -= soak
 		t.hp -= dmg
 		t.hurt = 1.0
 		if t.hp <= 0.0:
@@ -1381,6 +1410,8 @@ func _kill_enemy(e, killer) -> void:
 	e.dead_t = elapsed
 	e.hp = 0.0
 	e.moving = false
+	if e.kind == Defs.E_SOLDIER:
+		_drop_weapon(Defs.W_RIFLE, int(Defs.WPN[Defs.W_RIFLE].mag), 60, e.pos, 0.0)
 	if killer != null and killer.ttype == 1:
 		killer.kills += 1
 		if e.kind == Defs.E_SOLDIER and rng.randf() < 0.35:
@@ -1401,6 +1432,9 @@ func _kill_player(p, killer) -> void:
 	p.progress = 0.0
 	p.moving = false
 	p.puzzle = -1
+	if p.primary != Defs.W_KNIFE:
+		_drop_weapon(p.primary, int(p.mags.get(p.primary, 0)), int(p.res.get(p.primary, 0)), p.pos + Vector2(-0.3, 0.2), p.z)
+	p.armor = 0.0
 	p.z = 0.0
 	var dropped: int = p.keys.size()
 	_drop_keys(p)
@@ -1443,6 +1477,19 @@ func _pickups(p) -> void:
 				_give_key(p, kid)
 				_msg("%s [%s] grabbed a %s key" % [p.name, Defs.TEAM_NAMES[p.team], "guard's" if kt < 0 else Defs.TEAM_NAMES[kt]])
 			_ev(Defs.EV_PICKUP, it.pos, Vector2(0, 0))
+		elif it.k == 3:
+			# armor vest: only taken when it helps
+			if p.armor >= 99.0:
+				keep.append(it)
+				continue
+			p.armor = 100.0
+			var si: int = int(it.get("spot", -1))
+			if si >= 0 and si < armor_spots.size():
+				armor_spots[si].t = ARMOR_RESPAWN
+			_ev(Defs.EV_PICKUP, it.pos, Vector2(0, 0))
+		elif it.k == 4:
+			keep.append(it)   # guns are picked up with [use] (see _weapon_pickup)
+			continue
 		elif it.k == 2:
 			# supply crate: loot to bank + full refit
 			p.carried += int(it.value)
@@ -1495,9 +1542,100 @@ func _team_key_list(team: int) -> Array:
 	return out
 
 
+# ---------------------------------------------------------------- armor & dropped weapons
+
+var armor_spots: Array = []   # {pos, z, t}: t > 0 = respawn countdown, item back when it runs out
+
+
+## Scatter armor vests over open ground (host only - clients just see the items in the snapshot).
+func _place_armor() -> void:
+	armor_spots.clear()
+	var want: int = 10 if map.W <= 160 else 12
+	var tries := 0
+	while armor_spots.size() < want and tries < 4000:
+		tries += 1
+		var c := Vector2(rng.randf_range(6.0, map.W - 6.0), rng.randf_range(6.0, map.H - 6.0))
+		var cx := floori(c.x)
+		var cy := floori(c.y)
+		if map.circle_blocked(c, 0.5, {}, 0.0) or map.has_roof(cx, cy) or map.bunker_at(c) >= 0:
+			continue
+		var ok := true
+		for s in map.team_spawns:
+			if c.distance_to(Vector2(s.x, s.y)) < 14.0:
+				ok = false
+		for a in armor_spots:
+			if c.distance_to(a.pos) < 18.0:
+				ok = false
+		if ok:
+			armor_spots.append({"pos": Vector2(cx + 0.5, cy + 0.5), "z": 0.0, "t": 0.0})
+	for i in armor_spots.size():
+		_spawn_armor(i)
+
+
+func _spawn_armor(i: int) -> void:
+	var a: Dictionary = armor_spots[i]
+	items.append({"id": _nid(), "k": 3, "pos": a.pos, "life": 1e9, "z": float(a.z), "spot": i})
+
+
+func _update_armor(dt: float) -> void:
+	for i in armor_spots.size():
+		var a: Dictionary = armor_spots[i]
+		if float(a.t) > 0.0:
+			a.t = float(a.t) - dt
+			if float(a.t) <= 0.0:
+				_spawn_armor(i)
+
+
+func _drop_weapon(w: int, mag: int, res: int, pos: Vector2, z: float) -> void:
+	if w <= Defs.W_KNIFE or w >= Defs.WPN.size():
+		return
+	items.append({"id": _nid(), "k": 4, "wpn": w, "mag": mag, "res": res, "pos": pos, "life": WEAPON_DROP_LIFE, "z": z})
+
+
+## [use] next to a dropped gun: it replaces your primary (or sidearm), your old one drops in its place.
+func _weapon_pickup(p, pressed: bool) -> bool:
+	p.hw = -1
+	var best = null
+	var bd := 1.1
+	for it in items:
+		if it.k == 4 and absf(p.z - float(it.get("z", 0.0))) < 0.9:
+			var d: float = p.pos.distance_to(it.pos)
+			if d < bd:
+				bd = d
+				best = it
+	if best == null:
+		return false
+	var w: int = int(best.wpn)
+	p.hw = w
+	p.hint = Defs.H_WEAPON
+	if not pressed:
+		return true
+	items.erase(best)
+	var side: bool = Defs.SECONDARIES.has(w)
+	var old: int = p.secondary if side else p.primary
+	if old == w:
+		# same gun: just take the ammo
+		p.res[w] = -1 if int(p.res.get(w, 0)) < 0 else int(p.res.get(w, 0)) + int(best.mag) + maxi(0, int(best.res))
+	else:
+		_drop_weapon(old, int(p.mags.get(old, 0)), int(p.res.get(old, 0)), best.pos, float(best.get("z", 0.0)))
+		if side:
+			p.secondary = w
+		else:
+			p.primary = w
+		p.mags[w] = int(best.mag)
+		p.res[w] = int(best.res)
+		p.weapon = w
+		p.reload = 0.0
+		p.cool = 0.3
+	_ev(Defs.EV_PICKUP, best.pos, Vector2(0, 0))
+	return true
+
+
 func _interact(p, pressed: bool) -> void:
 	p.hint = 0
 	p.progress = 0.0
+	if _weapon_pickup(p, pressed):
+		return
 	var ts: Dictionary = teams[p.team]
 	for t in tanks:
 		if t.alive and t.team == p.team and p.pos.distance_to(t.pos) < _radius(t) + 0.9 and (t.driver == null or t.gunner == null):
@@ -2050,6 +2188,8 @@ func _vs(t) -> Dictionary:
 func _update_tank(t, dt: float) -> void:
 	var vs := _vs(t)
 	if not t.alive:
+		if mode == Defs.MODE_WAR:
+			return   # no reinforcements in a war: wrecks stay wrecks
 		t.respawn -= dt
 		if t.respawn <= 0.0:
 			_reset_tank(t)
@@ -3077,6 +3217,7 @@ func _spawn_vault_loot(b: int, announce: bool) -> void:
 
 
 func _update_world(dt: float) -> void:
+	_update_armor(dt)
 	for it in items:
 		it.life -= dt
 		if it.life <= 0.0 and it.k == 0 and keys.has(int(it.key)):
@@ -3136,7 +3277,153 @@ func _update_world(dt: float) -> void:
 		over = true
 		winner = top
 		_ev(Defs.EV_WIN, Vector2.ZERO)
-		_msg("MATCH OVER - %s TEAM WINS with %d %s" % [Defs.TEAM_NAMES[top], top_score, ["points", "captures", "kills"][mode]])
+		_msg("MATCH OVER - %s TEAM WINS with %d %s" % [Defs.TEAM_NAMES[top], top_score, ["points", "captures", "kills", "points"][mode]])
+
+
+# ---------------------------------------------------------------- WAR: capture points
+
+const POINT_R := 4.5
+const CAP_NEUTRAL := 15.0     # seconds to take a neutral point alone
+const CAP_ENEMY := 20.0       # seconds to flip an enemy point (it first drains to neutral)
+const POINT_TICK := 5.0       # every held point scores +1 this often
+const HOLD_ALL_WIN := 60.0    # holding all three this long wins outright
+var cpoints: Array = []       # {pos, owner, cap (team capturing or -1), prog 0..1}
+var point_t := 0.0
+var hold_all := 0.0
+var hold_team := -1
+
+
+## Three points across the middle of the map, perpendicular to the line between the first two camps.
+func _place_points() -> void:
+	cpoints.clear()
+	var c := Vector2(map.W * 0.5, map.H * 0.5)
+	var s0: Vector3 = map.team_spawns[0]
+	var s1: Vector3 = map.team_spawns[1]
+	var axis := (Vector2(s1.x, s1.y) - Vector2(s0.x, s0.y)).normalized()
+	var perp := Vector2(-axis.y, axis.x)
+	for k in 3:
+		var want: Vector2 = c + perp * float(k - 1) * map.W * 0.28
+		cpoints.append({"pos": _open_spot(want), "owner": -1, "cap": -1, "prog": 0.0})
+
+
+func _open_spot(want: Vector2) -> Vector2:
+	for rr in range(0, 14):
+		for a in maxi(1, rr * 6):
+			var c: Vector2 = want + Vector2.from_angle(TAU * float(a) / float(maxi(1, rr * 6))) * float(rr)
+			var ci := Vector2i(floori(c.x), floori(c.y))
+			if ci.x < 3 or ci.y < 3 or ci.x >= map.W - 3 or ci.y >= map.H - 3:
+				continue
+			if not map.circle_blocked(c, 1.2, {}, 0.0) and not map.has_roof(ci.x, ci.y):
+				return Vector2(ci.x + 0.5, ci.y + 0.5)
+	return want
+
+
+func _update_points(dt: float) -> void:
+	for cp in cpoints:
+		var counts := {}
+		for q in players.values():
+			if q.alive and q.pos.distance_to(cp.pos) <= POINT_R:
+				counts[q.team] = int(counts.get(q.team, 0)) + 1
+		if counts.size() != 1:
+			continue   # empty or contested: frozen
+		var t: int = int(counts.keys()[0])
+		var n: int = int(counts[t])
+		var rate: float = (1.0 + 0.25 * float(mini(n, 4) - 1)) * dt   # more people capture a bit faster
+		if int(cp.owner) == t:
+			cp.prog = minf(1.0, float(cp.prog) + rate / CAP_NEUTRAL)   # heal a damaged hold
+			cp.cap = -1
+			continue
+		if int(cp.owner) >= 0:
+			# drain the enemy's hold first
+			cp.cap = t
+			cp.prog = float(cp.prog) - rate / (CAP_ENEMY * 0.5)
+			if float(cp.prog) <= 0.0:
+				_msg("%s TEAM neutralised point %s" % [Defs.TEAM_NAMES[t], Defs.POINT_NAMES[cpoints.find(cp)]])
+				cp.owner = -1
+				cp.prog = 0.0
+			continue
+		if int(cp.cap) != t:
+			cp.cap = t
+			cp.prog = 0.0
+		cp.prog = float(cp.prog) + rate / CAP_NEUTRAL
+		if float(cp.prog) >= 1.0:
+			cp.owner = t
+			cp.prog = 1.0
+			cp.cap = -1
+			_ev(Defs.EV_PICKUP, cp.pos, Vector2(1, 0))
+			_msg("%s TEAM captured point %s!" % [Defs.TEAM_NAMES[t], Defs.POINT_NAMES[cpoints.find(cp)]])
+	# scoring
+	point_t += dt
+	if point_t >= POINT_TICK:
+		point_t -= POINT_TICK
+		for cp in cpoints:
+			if int(cp.owner) >= 0 and teams.has(int(cp.owner)):
+				teams[int(cp.owner)].score += 1
+	# one team holding everything wins after a minute
+	var o0: int = int(cpoints[0].owner) if cpoints.size() > 0 else -1
+	var all_same: bool = o0 >= 0
+	for cp in cpoints:
+		if int(cp.owner) != o0:
+			all_same = false
+	if all_same:
+		if hold_team != o0:
+			hold_team = o0
+			hold_all = 0.0
+			_msg("%s TEAM holds ALL points - %d s to total victory!" % [Defs.TEAM_NAMES[o0], int(HOLD_ALL_WIN)])
+		hold_all += dt
+		if hold_all >= HOLD_ALL_WIN and teams.has(o0):
+			teams[o0].score = maxi(int(teams[o0].score), score_limit)
+	else:
+		hold_team = -1
+		hold_all = 0.0
+
+
+func _points_snap() -> Array:
+	var out: Array = []
+	for cp in cpoints:
+		out.append([cp.pos.x, cp.pos.y, int(cp.owner), int(cp.cap), float(cp.prog)])
+	return out
+
+
+## WAR respawn: the owned point closest to the action (nearest to a point we don't own); INF = camp.
+func _war_spawn_point(team: int) -> Vector2:
+	if mode != Defs.MODE_WAR:
+		return Vector2.INF
+	var best := Vector2.INF
+	var bd := 1e9
+	for cp in cpoints:
+		if int(cp.owner) != team or int(cp.cap) >= 0:
+			continue   # only safe (uncontested) points
+		var d := 1e9
+		for o in cpoints:
+			if int(o.owner) != team:
+				d = minf(d, cp.pos.distance_to(o.pos))
+		if d < bd:
+			bd = d
+			best = cp.pos
+	return best
+
+
+func _bot_war_goal(p) -> Dictionary:
+	# most bots push the nearest point we don't own; every third bot guards a threatened own point
+	var guard: bool = p.slot % 3 == 2
+	var best = null
+	var bd := 1e9
+	for cp in cpoints:
+		var own: bool = int(cp.owner) == p.team
+		var threatened: bool = own and int(cp.cap) >= 0
+		var d: float = p.pos.distance_to(cp.pos)
+		if guard and threatened:
+			d -= 1000.0
+		elif own:
+			d += 500.0
+		if d < bd:
+			bd = d
+			best = cp
+	if best == null:
+		return {"goal": Vector2(map.W * 0.5, map.H * 0.5), "arrive": 2.0}
+	var off := Vector2.from_angle(float(p.id) * 2.39996) * 2.2
+	return {"goal": best.pos + off, "arrive": 1.5}
 
 
 # ---------------------------------------------------------------- game modes (capture the flag / team deathmatch)
@@ -3239,6 +3526,8 @@ func _update_flags(dt: float) -> void:
 func _bot_mode_goal(p) -> Dictionary:
 	var s: Vector3 = map.team_spawns[p.team]
 	var home := Vector2(s.x, s.y)
+	if mode == Defs.MODE_WAR:
+		return _bot_war_goal(p)
 	if mode == Defs.MODE_TDM:
 		# hunt the nearest enemy soldier or crewed vehicle
 		var bd := 1e9
@@ -3371,6 +3660,7 @@ func _bot_think(p, dt: float) -> Array:
 	var o := {"mx": 0.0, "my": 0.0, "yaw": p.yaw, "fire": false, "alt": false, "hold": false, "sprint": false, "crouch": false}
 	b.tick += 1
 	b.use_cd -= dt
+	b.seat_t -= dt
 	b.see_t -= dt
 	b.react_t -= dt
 	b.err_t -= dt
@@ -3439,6 +3729,14 @@ func _bot_tank(p, b, dt: float, o: Dictionary) -> void:
 		b.use_c += 1
 		b.use_cd = 3.0
 		return
+	# alone in the vehicle a bot can't drive and shoot at once: drive to the gate, then move to the gun (and back)
+	var alone: bool = t.driver == null or t.gunner == null
+	if alone and b.seat_t <= 0.0:
+		var want_gun: bool = at_gate or (b.target != null and not t.moving and t.pos.distance_to(b.target.pos) < 9.0)
+		if (role == Defs.ROLE_DRIVER and want_gun) or (role == Defs.ROLE_GUNNER and not want_gun):
+			_switch_seat(p)
+			b.seat_t = 1.5
+			return
 	if role == Defs.ROLE_SOLO or role == Defs.ROLE_DRIVER:
 		if not at_gate:
 			_bot_drive(b, t, appr, dt, o)

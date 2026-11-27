@@ -592,6 +592,58 @@ func _flag_carrier(team: int) -> int:
 	return int(f[4]) if f.size() > 4 and int(f[3]) == 1 else -1
 
 
+## WAR: point list in the objectives panel + floating A/B/C markers + a capture bar while you stand on a point.
+func _draw_war_objectives(fs: int, pad: float, oy: float, line: float) -> void:
+	var team: int = me.tm
+	var cpl: Array = snap.get("cp", [])
+	var mypos := Vector2(float(me.x), float(me.y))
+	var s := hud.size
+	for i in cpl.size():
+		var cp: Array = cpl[i]
+		var own: int = int(cp[2])
+		var cap: int = int(cp[3])
+		var prog: float = float(cp[4])
+		var who: String = "neutral" if own < 0 else ("YOURS" if own == team else Defs.TEAM_NAMES[own])
+		var txt := "POINT %s  -  %s" % [Defs.POINT_NAMES[i], who]
+		var col: Color = Defs.TEAM_COLORS[own].lightened(0.35) if own >= 0 else Color(0.85, 0.85, 0.8)
+		if cap >= 0:
+			txt += "   (%s %s %d%%)" % [Defs.TEAM_NAMES[cap], "neutralising" if own >= 0 else "capturing", int((1.0 - prog if own >= 0 else prog) * 100.0)]
+			if own == team:
+				col = Color(1, 0.35, 0.3) if fmod(time, 1.0) < 0.6 else Color(1, 0.8, 0.4)
+		_txt(Vector2(pad, oy), txt, fs - 6, col)
+		oy += line - 6
+		# floating marker over the point
+		var ppos := Vector2(float(cp[0]), float(cp[1]))
+		var sp := _project(ppos, 2.4, s)
+		if sp.x > 0.0 and sp.x < s.x and sp.y > 0.0 and sp.y < s.y:
+			var d := cam_pos.distance_to(ppos)
+			var r := clampf(260.0 / maxf(d, 1.0), 9.0, 22.0)
+			hud.draw_circle(Vector2(sp.x, sp.y), r, Color(0, 0, 0, 0.55))
+			hud.draw_arc(Vector2(sp.x, sp.y), r, 0, TAU, 24, col, 2.0)
+			if cap >= 0:
+				hud.draw_arc(Vector2(sp.x, sp.y), r + 3.0, -PI * 0.5, -PI * 0.5 + TAU * prog, 24, Defs.TEAM_COLORS[cap], 3.0)
+			hud.draw_string(font, Vector2(sp.x - r * 0.4, sp.y + r * 0.45), Defs.POINT_NAMES[i], HORIZONTAL_ALIGNMENT_LEFT, -1, int(r * 1.2), col)
+			_txt(Vector2(sp.x - 40, sp.y + r + fs * 0.7), "%dm" % int(d), fs - 9, Color(1, 1, 1, 0.8), HORIZONTAL_ALIGNMENT_CENTER, 80)
+		# capture bar while standing on it
+		if mypos.distance_to(ppos) <= 4.5 and int(me.get("tank", -1)) < 0:
+			var bw := 320.0
+			var br := Rect2(s.x * 0.5 - bw * 0.5, s.y * 0.30, bw, 16)
+			var state := "HOLDING %s" % Defs.POINT_NAMES[i]
+			var f := prog
+			var bc: Color = Defs.TEAM_COLORS[team]
+			if cap >= 0 and cap != team:
+				state = "CONTESTED %s" % Defs.POINT_NAMES[i]
+				bc = Defs.TEAM_COLORS[cap]
+			elif cap == team:
+				state = ("NEUTRALISING %s" if own >= 0 else "CAPTURING %s") % Defs.POINT_NAMES[i]
+				f = 1.0 - prog if own >= 0 else prog
+			_bar(br, f, bc, "", fs - 6)
+			_txt(Vector2(0, br.position.y - 6), state, fs - 2, Color(1, 1, 0.8), HORIZONTAL_ALIGNMENT_CENTER, s.x)
+	var h3: float = float(snap.get("hold3", 0.0))
+	if h3 > 0.0:
+		_txt(Vector2(pad, oy + 2), "ALL POINTS HELD: victory in %d s" % int(60.0 - h3), fs - 5, Color(1, 0.85, 0.3))
+
+
 ## Game log (kill feed + messages): small lines on a dark strip, the local player's name in bold yellow.
 func _draw_log(s: Vector2, fs: int) -> void:
 	var t: float = snap.get("t", 0.0)
@@ -855,6 +907,24 @@ func _build_sprites(effects: Array, plen: float) -> void:
 		elif typ == Defs.E_AMMO:
 			frame = Defs.FR_AMMO
 			scale = 0.75
+		elif typ == Defs.E_POINT:
+			# capture point: a big flag in the owner's colour (white = neutral)
+			frame = Defs.FR_FLAG + (clampi(team, 0, 3) if team >= 0 else 4) * 2 + int(time * 5.0 + pos.x * 0.37) % 2
+			scale = 1.5
+		elif typ == Defs.E_ARMOR:
+			frame = Defs.FR_ARMOR
+			scale = 0.5
+			zoff = aux + bobz * 0.4
+			flash = 0.04 + 0.04 * sin(time * 4.0)
+		elif typ == Defs.E_WEAPON:
+			var wid := clampi(fl, 0, Defs.FR_WEAPONS.size() - 1)
+			frame = int(Defs.FR_WEAPONS[wid])
+			scale = 0.55
+			zoff = aux - 0.02
+			# blink for the last 30% of its life
+			if hp < 0.3 and fmod(time * 6.0, 1.0) < 0.35:
+				continue
+			flash = 0.1
 		elif typ == Defs.E_DROP:
 			frame = Defs.FR_DROP
 			scale = 0.85
@@ -1354,6 +1424,10 @@ func _draw_hud() -> void:
 	var y := s.y - pad - 22.0
 	if role != Defs.ROLE_DEAD:
 		_bar(Rect2(pad, y, 240, 22), float(me.hp) / 100.0, Color(0.8, 0.15, 0.15), "HP %d" % int(me.hp), fs - 4)
+		var ar: float = float(me.get("ar", 0.0))
+		if ar > 0.0:
+			y -= 18.0
+			_bar(Rect2(pad, y, 240, 14), ar / 100.0, Color(0.3, 0.6, 0.95), "ARMOR %d" % int(ar), fs - 8)
 		y -= 14.0
 		hud.draw_rect(Rect2(pad, y, 240, 8), Color(0, 0, 0, 0.5))
 		hud.draw_rect(Rect2(pad, y, 240 * float(me.st), 8), Color(0.95, 0.2, 0.15) if me.ex else Color(0.9, 0.85, 0.3))
@@ -1427,6 +1501,10 @@ func _draw_hud() -> void:
 			Defs.H_MORTAR_BUSY: "Mortar in use",
 			Defs.H_FLAG_NOVEH: "Flag carriers can't use vehicles - run it home!",
 		}
+		if hint == Defs.H_WEAPON:
+			var hw: int = int(me.get("hw", -1))
+			if hw > 0 and hw < Defs.WPN.size():
+				hints[hint] = "[%s] Pick up %s" % [_key("use"), str(Defs.WPN[hw].name)]
 		var htxt: String = hints.get(hint, "")
 		if hint == Defs.H_HEAL:
 			for q in snap.get("p", []):
@@ -1452,10 +1530,12 @@ func _draw_objectives(s: Vector2, fs: int, pad: float, line: float) -> void:
 	var team: int = me.tm
 	var ts := _team_state(team)
 	var bl: Array = snap.get("bunkers", [])
-	if ts.is_empty() or bl.is_empty():
+	if ts.is_empty():
 		return
 	if _gmode() != Defs.MODE_HEIST:
 		_draw_mode_objectives(fs, pad, line)
+		return
+	if bl.is_empty():
 		return
 	var oy := pad + fs
 	_txt(Vector2(pad, oy), "%s TEAM   %d PTS" % [Defs.TEAM_NAMES[team], int(ts.score)], fs, Defs.TEAM_COLORS[team].lightened(0.3))
@@ -1497,6 +1577,9 @@ func _draw_mode_objectives(fs: int, pad: float, line: float) -> void:
 	var lim_txt := "" if lim > 99999 else " / %d" % lim
 	_txt(Vector2(pad, oy), "%s  -  %s TEAM   %d%s %s" % [Defs.MODE_NAMES[gm], Defs.TEAM_NAMES[team], my_score, lim_txt, Defs.MODE_UNITS[gm].to_upper()], fs, Defs.TEAM_COLORS[team].lightened(0.3))
 	oy += line
+	if gm == Defs.MODE_WAR:
+		_draw_war_objectives(fs, pad, oy, line)
+		return
 	if gm == Defs.MODE_CTF:
 		var carrying := -1
 		for f in snap.get("flags", []):
@@ -1990,6 +2073,20 @@ func _draw_minimap(s: Vector2, pad: float) -> void:
 			hud.draw_rect(Rect2(p - Vector2(3, 3), Vector2(6, 6)), Color.BLACK, false, 1.0)
 		elif (typ == Defs.E_SOLDIER or typ == Defs.E_TURRET) and spotted.has(id):
 			hud.draw_circle(p, 2.5 if typ == Defs.E_SOLDIER else 3.5, Color(1, 0.15, 0.1))
+	# WAR capture points: owner-coloured diamond + letter, pulsing ring while being captured
+	var cpl: Array = snap.get("cp", [])
+	for i in cpl.size():
+		var cp: Array = cpl[i]
+		var pp: Vector2 = o + Vector2(float(cp[0]), float(cp[1])) * k
+		var own: int = int(cp[2])
+		var pc: Color = Defs.TEAM_COLORS[own] if own >= 0 else Color(0.85, 0.85, 0.8)
+		var dia := PackedVector2Array([pp + Vector2(0, -7), pp + Vector2(7, 0), pp + Vector2(0, 7), pp + Vector2(-7, 0)])
+		hud.draw_colored_polygon(dia, Color(0, 0, 0, 0.8))
+		hud.draw_polyline(dia + PackedVector2Array([dia[0]]), pc, 2.0)
+		if int(cp[3]) >= 0:
+			var cc: Color = Defs.TEAM_COLORS[int(cp[3])]
+			hud.draw_arc(pp, 9.0 + 2.0 * sin(time * 8.0), 0, TAU, 16, cc, 1.5)
+		hud.draw_string(font, pp + Vector2(-4, 4), Defs.POINT_NAMES[i], HORIZONTAL_ALIGNMENT_LEFT, -1, 11, pc.lightened(0.3))
 	# CTF flags (always shown - carriers too, for everyone)
 	for f in snap.get("flags", []):
 		var ft: int = int(f[0])

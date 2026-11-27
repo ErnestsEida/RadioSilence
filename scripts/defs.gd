@@ -48,6 +48,12 @@ const EV_EVENT := 25      # x2 = event kind, y2 = phase (0 announced, 1 action s
 
 # ---------------------------------------------------------------- random events
 const E_DROP := 16
+const E_ARMOR := 31        # armor vest pickup
+const E_WEAPON := 32       # dropped weapon: fl = weapon id, aux = z
+const H_WEAPON := 31       # [use] swap for the weapon on the ground (player record "hw" = its weapon id)
+const FR_ARMOR := 99
+## sprite frame of each weapon lying on the ground (index = weapon id; knife never drops)
+const FR_WEAPONS := [0, 100, 101, 102, 103, 104, 114, 115, 116, 117, 118, 119, 235]
 const EVT_SUPPLY := 0
 const EVT_ARTY := 1
 const EVT_STORM := 2
@@ -72,9 +78,12 @@ const EV_STRIDE := 5      # type, x, y, x2, y2
 const MODE_HEIST := 0
 const MODE_CTF := 1
 const MODE_TDM := 2
-const MODE_NAMES := ["HEIST", "CAPTURE THE FLAG", "TEAM DEATHMATCH"]
-const MODE_UNITS := ["pts", "captures", "kills"]
-const MODE_SCORES := [[1500, 2500, 4000, 999999], [3, 5, 8, 999999], [25, 40, 60, 999999]]
+const MODE_WAR := 3
+const MODE_NAMES := ["HEIST", "CAPTURE THE FLAG", "TEAM DEATHMATCH", "WAR SIMULATOR"]
+const MODE_UNITS := ["pts", "captures", "kills", "pts"]
+const MODE_SCORES := [[1500, 2500, 4000, 999999], [3, 5, 8, 999999], [25, 40, 60, 999999], [100, 150, 250, 999999]]
+const E_POINT := 33        # WAR capture point: team = owner (-1 neutral), hp = capture progress, aux = point index
+const POINT_NAMES := ["A", "B", "C"]
 const E_FLAG := 30         # team flag: fl = state (0 home, 1 carried, 2 dropped), aux = z
 const H_FLAG_NOVEH := 30   # flag carriers can't use vehicles
 const FLAG_RETURN := 25.0  # a dropped flag returns home after this long
@@ -99,7 +108,8 @@ const FR_MORTAR := 245    # (240 = FR_PLANE)
 const TEAM_COLORS := [Color(0.25, 0.45, 0.9), Color(0.95, 0.5, 0.12), Color(0.2, 0.75, 0.4), Color(0.7, 0.3, 0.85)]
 const TEAM_NAMES := ["BLUE", "ORANGE", "GREEN", "VIOLET"]
 const DIFFICULTY_NAMES := ["Recruit", "Regular", "Veteran"]
-const BOT_NAMES := ["Hawk", "Viper", "Bear", "Wolf", "Falcon", "Cobra", "Lynx", "Raven", "Moose", "Fox", "Badger", "Eagle", "Jackal", "Otter", "Bison", "Puma", "Heron", "Mako"]
+const BOT_NAMES := ["Opus", "Fable", "Gemini", "Sonnet", "Haiku", "Mythos", "GPT", "Llama", "Mistral", "Grok", "DeepSeek", "Qwen",
+	"Gemma", "Codex", "Kimi", "Phi", "Mixtral", "Nova", "Copilot", "Command", "Jamba", "Titan", "Falcon", "Granite"]
 const ROOM_NAMES := ["CODE LOCK", "SIGNAL TUNER", "VAULT"]
 const BUNKER_NAMES := ["NORTH", "SOUTH", "WEST", "EAST"]
 
