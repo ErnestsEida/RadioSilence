@@ -462,6 +462,14 @@ static func run() -> int:
 		_test_mortars()
 		print("RESULT: %s (%d failures)" % ["PASS" if fails == 0 else "FAIL", fails])
 		return 0 if fails == 0 else 1
+	if OS.get_cmdline_user_args().has("--planes"):
+		_test_planes()
+		print("RESULT: %s (%d failures)" % ["PASS" if fails == 0 else "FAIL", fails])
+		return 0 if fails == 0 else 1
+	if OS.get_cmdline_user_args().has("--war16"):
+		_test_war16()
+		print("RESULT: %s (%d failures)" % ["PASS" if fails == 0 else "FAIL", fails])
+		return 0 if fails == 0 else 1
 	if OS.get_cmdline_user_args().has("--war"):
 		_test_war()
 		print("RESULT: %s (%d failures)" % ["PASS" if fails == 0 else "FAIL", fails])
@@ -661,6 +669,7 @@ static func run() -> int:
 	_test_puzzles()
 	_test_items()
 	_test_war()
+	_test_planes()
 
 	print("== movement and bullets")
 	var m4 = MapData.new()
@@ -1068,7 +1077,10 @@ static func _test_war() -> void:
 	w._destroy_tank(tk, null)
 	for i in int(40.0 / DT):
 		w.step(DT)
-	_check(not tk.alive, "destroyed vehicles stay destroyed (no respawn)")
+	var still_dead: bool = not tk.alive
+	for i in int(22.0 / DT):
+		w.step(DT)
+	_check(still_dead and tk.alive, "WAR vehicles respawn slowly (dead after 40 s, back after %.0f s)" % w.WAR_RESPAWN)
 	# AI teams fight over the points
 	print("== WAR: 2 AI teams of 4 for 6 sim minutes")
 	var mb = MapData.new()
@@ -1082,3 +1094,137 @@ static func _test_war() -> void:
 			if int(cp.owner) >= 0:
 				taken[wb.cpoints.find(cp)] = true
 	_check(taken.size() >= 2, "AI captured %d of 3 points; scores %d : %d" % [taken.size(), int(wb.teams[0].score), int(wb.teams[1].score)])
+
+
+static func _test_war16() -> void:
+	print("== WAR 16 v 16: 30 AI + spawns, host step time, snapshot size")
+	var m = MapData.new()
+	m.generate(0, SEED, 16, false)
+	var w = World.new(m, _bots(2, 16), SEED, 1, 900.0, 150, Defs.MODE_WAR)
+	w.evt_next = 1e9
+	var n0 := 0
+	var n1 := 0
+	for p in w.players.values():
+		if p.team == 0: n0 += 1
+		else: n1 += 1
+	_check(n0 == 16 and n1 == 16, "32 players, 16 per team")
+	# nobody stacked at the camps
+	var stacked := 0
+	var ps: Array = w.players.values()
+	for i in ps.size():
+		for j in range(i + 1, ps.size()):
+			if ps[i].tank == null and ps[j].tank == null and ps[i].pos.distance_to(ps[j].pos) < 0.6:
+				stacked += 1
+	_check(stacked == 0, "no stacked spawns (%d pairs too close)" % stacked)
+	var taken := {}
+	var flips := 0
+	var last_owner := [-1, -1, -1]
+	var worst := 0.0
+	var total := 0.0
+	var steps := int(240.0 / DT)
+	var snap_bytes := 0
+	var plane_top := 0.0
+	var bombed := false
+	for i in steps:
+		var t0 := Time.get_ticks_usec()
+		w.step(DT)
+		var us := float(Time.get_ticks_usec() - t0)
+		total += us
+		if i > 60:
+			worst = maxf(worst, us)
+		if i % 600 == 0:
+			snap_bytes = maxi(snap_bytes, var_to_bytes(w.snapshot()).size())
+		for t in w.tanks:
+			if w._is_plane(t):
+				plane_top = maxf(plane_top, t.z)
+				if t.bombs < int(Defs.VEHICLES[t.vtype].bombs):
+					bombed = true
+		for k in w.cpoints.size():
+			var o: int = int(w.cpoints[k].owner)
+			if o >= 0:
+				taken[k] = true
+			if o != int(last_owner[k]) and o >= 0 and int(last_owner[k]) >= 0:
+				flips += 1
+			if o >= 0:
+				last_owner[k] = o
+	var avg_ms := total / float(steps) / 1000.0
+	print("  avg step %.2f ms, worst %.1f ms, snapshot %d bytes (%.0f KB/s at 60 Hz per client)" % [avg_ms, worst / 1000.0, snap_bytes, snap_bytes * 60.0 / 1024.0])
+	_check(taken.size() >= 2, "AI captured %d points, %d flips; score %d : %d" % [taken.size(), flips, int(w.teams[0].score), int(w.teams[1].score)])
+	_check(avg_ms < 8.0, "host step time ok for 32 players (%.2f ms avg)" % avg_ms)
+	_check(plane_top > 4.0 and bombed, "AI aircrews took off (max altitude %.1f) and dropped bombs: %s" % [plane_top, str(bombed)])
+
+
+static func _test_planes() -> void:
+	print("== WAR planes: take-off, climb, bombs, crash, no respawn")
+	var m = MapData.new()
+	m.generate(0, SEED, 2, false)
+	var w = World.new(m, [{"pid": 1, "peer": 1, "name": "A", "team": 0}, {"pid": 2, "peer": 1, "name": "B", "team": 0},
+		{"pid": 3, "peer": 1, "name": "C", "team": 1}], SEED, 1, 900.0, 150, Defs.MODE_WAR)
+	_quiet(w)
+	var a = w.players[1]
+	var b = w.players[2]
+	var c = w.players[3]
+	w._exit_tank(a)
+	w._exit_tank(b)
+	w._exit_tank(c)
+	c.pos = Vector2(5, 5)
+	var planes: Array = []
+	for t in w.tanks:
+		if w._is_plane(t):
+			planes.append(t)
+	_check(planes.size() >= 4, "%d planes parked in WAR (both teams)" % planes.size())
+	var pt = null
+	for t in planes:
+		if t.team == 0:
+			pt = t
+			break
+	w._enter_tank(a, pt)
+	w._enter_tank(b, pt)
+	_check(pt.driver == a and pt.gunner == b and w._role(a) == Defs.ROLE_DRIVER and w._role(b) == Defs.ROLE_GUNNER, "pilot + bomber seats")
+	# full throttle, pull up
+	var secs := 0.0
+	var maxz := 0.0
+	while secs < 20.0 and pt.alive:
+		w.set_input(1, _inp(a, {"my": 1.0, "pitch": 0.45}))
+		w.set_input(2, _inp(b, {"pitch": -1.0}))
+		w.set_input(3, _inp(c))
+		w.step(DT)
+		secs += DT
+		maxz = maxf(maxz, pt.z)
+		if pt.z > 6.0:
+			break
+	_check(pt.alive and pt.z > 6.0, "took off and climbed to %.1f in %.1f s (speed %.1f)" % [pt.z, secs, pt.speed])
+	_check(a.z > 5.0 and b.pos.distance_to(pt.pos) < 0.01, "crew rides along at altitude")
+	# level off and bomb
+	var b0: int = pt.bombs
+	for i in 20:
+		w.set_input(1, _inp(a, {"my": 1.0, "pitch": 0.0}))
+		w.set_input(2, _inp(b, {"fire": i < 3, "pitch": -1.0}))
+		w.set_input(3, _inp(c))
+		w.step(DT)
+	_check(pt.bombs < b0 and w.shells.size() > 0, "bomber released a bomb (%d left)" % pt.bombs)
+	var landed := false
+	for i in int(6.0 / DT):
+		w.set_input(1, _inp(a, {"my": 1.0, "pitch": 0.0}))
+		w.set_input(2, _inp(b, {"pitch": -1.0}))
+		w.step(DT)
+		if w.shells.is_empty():
+			landed = true
+			break
+	_check(landed, "the bomb fell and exploded on the ground")
+	# a bail-out at altitude is fatal
+	w._exit_tank(b)
+	_check(not b.alive, "jumping out of a flying plane kills you")
+	# dive into the ground -> crash, crew dies, wreck stays
+	for i in int(20.0 / DT):
+		w.set_input(1, _inp(a, {"my": 1.0, "pitch": -0.7}))
+		w.step(DT)
+		if not pt.alive:
+			break
+	_check(not pt.alive and not a.alive, "diving into the ground crashes the plane and kills the pilot")
+	for i in int(40.0 / DT):
+		w.step(DT)
+	var down: bool = not pt.alive
+	for i in int(22.0 / DT):
+		w.step(DT)
+	_check(down and pt.alive and pt.z == 0.0 and pt.bombs > 0, "crashed planes return to the airfield after %.0f s, rearmed" % w.WAR_RESPAWN)

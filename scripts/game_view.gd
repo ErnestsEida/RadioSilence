@@ -245,7 +245,7 @@ func render(p_snap: Dictionary, rec: Dictionary, effects: Array, dt: float) -> v
 	var foot_z := float(me.z)
 	var target_eye := foot_z + (0.38 if me.cr else 0.62)
 	if role == Defs.ROLE_SOLO or role == Defs.ROLE_DRIVER or role == Defs.ROLE_GUNNER:
-		target_eye = [0.78, 0.72, 0.66, 0.74, 0.8][my_vtype]
+		target_eye = [0.78, 0.72, 0.66, 0.74, 0.8][my_vtype] if my_vtype < Defs.PLANE_FIRST else foot_z + (0.95 if my_vtype == 6 else 0.82)
 	elif role == Defs.ROLE_DEAD:
 		target_eye = lerpf(foot_z + 0.6, foot_z + 0.1, minf(dead_t / 0.6, 1.0))
 	if absf(eye - target_eye) < 0.5:
@@ -290,6 +290,7 @@ func render(p_snap: Dictionary, rec: Dictionary, effects: Array, dt: float) -> v
 	mat.set_shader_parameter("indoor", indoor_k)
 	_update_ambient(dt)
 	_event_fx(dt)
+	_war_sky(dt)
 	if vlayer != null:
 		vlayer.begin()
 	_build_sprites(effects, plen)
@@ -335,6 +336,87 @@ func _evt() -> Dictionary:
 func _evt_on(k: int) -> bool:
 	var ev := _evt()
 	return not ev.is_empty() and int(ev.k) == k and float(ev.get("warn", 0.0)) <= 0.0
+
+
+# ---- WAR sky: decorative rockets and bursts (client-side only, nothing to sync)
+var war_rk: Array = []
+var war_fl: Array = []
+var war_rk_t := 0.0
+var war_fl_t := 0.0
+var war_booms: Array = []   # [delay, volume_db, pitch]
+var war_on := false
+
+
+func _war_sky(dt: float) -> void:
+	var on := _gmode() == Defs.MODE_WAR
+	if not on:
+		if war_on:
+			war_on = false
+			mat.set_shader_parameter("war_rk", _vec4s(8, []))
+			mat.set_shader_parameter("war_fl", _vec4s(4, []))
+			mat.set_shader_parameter("war_amb", 0.0)
+		return
+	war_on = true
+	# rockets: launched from beyond the hills, arcing across part of the sky
+	war_rk_t -= dt
+	if war_rk_t <= 0.0:
+		war_rk_t = randf_range(0.2, 0.7)
+		var slot := -1
+		for i in 8:
+			if i >= war_rk.size():
+				war_rk.append(Vector4.ZERO)
+			var r: Vector4 = war_rk[i]
+			if r.w <= 0.0 or time - r.y > 4.2:
+				slot = i
+				break
+		if slot >= 0:
+			var travel := randf_range(0.6, 1.6) * (1.0 if randf() < 0.5 else -1.0)
+			war_rk[slot] = Vector4(randf() * TAU, time, travel, randf_range(0.08, 0.3))
+	# rockets ending in a burst; random bursts on the horizon (distant artillery)
+	for i in war_rk.size():
+		var r: Vector4 = war_rk[i]
+		if r.w > 0.0 and time - r.y >= 3.2 and time - r.y < 3.2 + dt * 1.5 and randf() < 0.6:
+			_war_burst(r.x + r.z, 0.06, randf_range(0.7, 1.0), randf_range(0.07, 0.12))
+	war_fl_t -= dt
+	if war_fl_t <= 0.0:
+		war_fl_t = randf_range(0.6, 2.2)
+		_war_burst(randf() * TAU, randf_range(0.05, 0.16), randf_range(0.45, 1.0), randf_range(0.08, 0.18))
+	var amb := 0.0
+	for i in war_fl.size():
+		var f: Vector4 = war_fl[i]
+		f.z = maxf(0.0, f.z - dt * 1.6)
+		war_fl[i] = f
+		amb = maxf(amb, f.z)
+	# distant booms arrive a moment after the flash
+	for b in war_booms:
+		b[0] = float(b[0]) - dt
+		if float(b[0]) <= 0.0 and lp.view_index == 0:
+			Sfx.play("explosion" if randf() < 0.75 else "thunder", float(b[1]), float(b[2]))
+	war_booms = war_booms.filter(func(b): return float(b[0]) > 0.0)
+	mat.set_shader_parameter("war_rk", _vec4s(8, war_rk))
+	mat.set_shader_parameter("war_fl", _vec4s(4, war_fl))
+	mat.set_shader_parameter("war_amb", amb * 0.22)
+
+
+func _war_burst(ang: float, up: float, inten: float, size: float) -> void:
+	var slot := 0
+	var low := 9.0
+	for i in 4:
+		if i >= war_fl.size():
+			war_fl.append(Vector4.ZERO)
+		var f: Vector4 = war_fl[i]
+		if f.z < low:
+			low = f.z
+			slot = i
+	war_fl[slot] = Vector4(ang, up, inten, size)
+	war_booms.append([randf_range(0.6, 3.5), -30.0 + inten * 8.0, randf_range(0.45, 0.7)])
+
+
+func _vec4s(n: int, src: Array) -> PackedVector4Array:
+	var out := PackedVector4Array()
+	for i in n:
+		out.append(src[i] if i < src.size() else Vector4.ZERO)
+	return out
 
 
 ## Storm visibility, rain/blizzard intensity and lightning; smoke flare over a supply drop.
@@ -864,7 +946,7 @@ func _build_sprites(effects: Array, plen: float) -> void:
 			var fi: int = [0, 1 + (anim if fl & 2 else 0), 3][f.x]
 			frame = (Defs.FR_TANK + team * 4 + fi) if vt == 0 else (Defs.FR_VEH + (vt - 1) * 16 + team * 4 + fi)
 			mirror = float(f.y)
-			scale = [1.3, 1.2, 0.95, 1.1, 1.3][vt]
+			scale = [1.3, 1.2, 0.95, 1.1, 1.3, 1.6, 2.0, 1.7][vt]
 			if fl & 1:
 				flash = 0.4
 		elif typ == Defs.E_WRECK:
@@ -1135,9 +1217,91 @@ func _draw_weapon() -> void:
 			return
 		_draw_vm(s)
 	elif role != Defs.ROLE_DEAD:
-		if vv != null:
-			vv.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-		_draw_cockpit(s, role)
+		if my_vtype >= Defs.PLANE_FIRST:
+			if vv != null:
+				vv.render_target_update_mode = SubViewport.UPDATE_DISABLED   # the HUD layer draws the flight instruments
+		else:
+			if vv != null:
+				vv.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+			_draw_cockpit(s, role)
+
+
+## Plane crew HUD: pilot gets horizon ladder, altimeter, airspeed + stall warning; bomber gets the bombsight.
+func _draw_plane_hud(s: Vector2, role: int) -> void:
+	var pl: Array = me.get("pl", [])
+	if pl.size() < 6:
+		return
+	var alt: float = pl[0]
+	var spd: float = pl[1]
+	var pp: float = pl[2]
+	var bombs: int = int(pl[3])
+	var vmax: float = pl[4]
+	var vto: float = pl[5]
+	var fs := int(clampf(s.y / 42.0, 12.0, 36.0) * Settings.ui_scale)
+	var c := s * 0.5
+	var g := Color(0.45, 1.0, 0.55, 0.9)
+	var flying := alt > 0.05
+	if role == Defs.ROLE_DRIVER:
+		# horizon ladder (rolls with the bank)
+		hud.draw_arc(c, 10, 0, TAU, 20, g, 2.0)
+		hud.draw_line(c + Vector2(-34, 0), c + Vector2(-14, 0), g, 2.0)
+		hud.draw_line(c + Vector2(14, 0), c + Vector2(34, 0), g, 2.0)
+		for k in range(-3, 4):
+			var ang := float(k) * 0.15
+			var yy: float = c.y + (cam_pitch - ang) * s.y * 0.9
+			if yy < s.y * 0.15 or yy > s.y * 0.85:
+				continue
+			var w := 120.0 if k == 0 else 60.0
+			hud.draw_line(Vector2(c.x - w, yy), Vector2(c.x - 30, yy), Color(g.r, g.g, g.b, 0.55), 1.5)
+			hud.draw_line(Vector2(c.x + 30, yy), Vector2(c.x + w, yy), Color(g.r, g.g, g.b, 0.55), 1.5)
+		# airspeed (left) + altitude (right) tapes
+		var lt := Rect2(c.x - s.x * 0.28, c.y - 90, 18, 180)
+		hud.draw_rect(lt, Color(0, 0, 0, 0.4))
+		hud.draw_rect(Rect2(lt.position.x, lt.end.y - lt.size.y * spd / maxf(vmax * 1.25, 0.1), lt.size.x, lt.size.y * spd / maxf(vmax * 1.25, 0.1)), g)
+		var sy: float = lt.end.y - lt.size.y * vto / (vmax * 1.25)
+		hud.draw_line(Vector2(lt.position.x - 6, sy), Vector2(lt.end.x + 6, sy), Color(1, 0.4, 0.3), 2.0)
+		_txt(Vector2(lt.position.x - 70, lt.end.y + fs), "SPD %d" % int(spd * 20.0), fs - 6, g)
+		var rt := Rect2(c.x + s.x * 0.28 - 18, c.y - 90, 18, 180)
+		hud.draw_rect(rt, Color(0, 0, 0, 0.4))
+		hud.draw_rect(Rect2(rt.position.x, rt.end.y - rt.size.y * alt / 14.0, rt.size.x, rt.size.y * alt / 14.0), Color(0.5, 0.8, 1.0))
+		_txt(Vector2(rt.position.x - 10, rt.end.y + fs), "ALT %d" % int(alt * 30.0), fs - 6, Color(0.6, 0.85, 1.0))
+		if flying and spd < vto * 0.8 and fmod(time, 0.6) < 0.4:
+			_glow_txt(Vector2(0, c.y + 70), "STALL - DIVE TO GAIN SPEED", fs + 2, Color(1, 0.3, 0.25), HORIZONTAL_ALIGNMENT_CENTER, s.x)
+		elif not flying:
+			var hint := "W throttle up, pull the mouse back past the red line to take off" if spd < vto else "PULL UP (mouse back) to take off!"
+			_txt(Vector2(0, c.y + 70), hint, fs - 3, Color(1, 1, 0.7), HORIZONTAL_ALIGNMENT_CENTER, s.x)
+		# control stick: where the mouse holds it (left/right = turn, up/down = climb/dive)
+		var st := Vector2(float(lp.psteer), -float(lp.pitch) / 0.7)
+		var sb := Rect2(c.x - 45, s.y - 250, 90, 90)
+		hud.draw_rect(sb, Color(0, 0, 0, 0.35))
+		hud.draw_rect(sb, Color(g.r, g.g, g.b, 0.4), false, 1.0)
+		hud.draw_line(Vector2(sb.get_center().x, sb.position.y), Vector2(sb.get_center().x, sb.end.y), Color(g.r, g.g, g.b, 0.25), 1.0)
+		hud.draw_line(Vector2(sb.position.x, sb.get_center().y), Vector2(sb.end.x, sb.get_center().y), Color(g.r, g.g, g.b, 0.25), 1.0)
+		hud.draw_circle(sb.get_center() + st * 41.0, 5.0, g)
+		var ctl := "W/S throttle   mouse: steer + climb/dive" if lp.device == "kbm" else "throttle / steer: stick   climb/dive: aim"
+		_txt(Vector2(0, s.y - 80), "%s   [%s] switch to bombsight" % [ctl, _key("seat")], fs - 7, Color(0.85, 0.85, 0.8, 0.8), HORIZONTAL_ALIGNMENT_CENTER, s.x)
+	else:
+		# bombsight: where a bomb released now would land
+		if flying:
+			var vh := spd * cos(pp)
+			var vz0 := spd * sin(pp)
+			var z0 := alt - 0.35
+			var tt := (vz0 + sqrt(maxf(0.0, vz0 * vz0 + 2.0 * 6.0 * z0))) / 6.0
+			var hit := cam_pos + Vector2.from_angle(my_hull) * vh * tt
+			var sp := _project(hit, 0.0, s)
+			if sp.x > -1e8:
+				var col := Color(1, 0.35, 0.25)
+				hud.draw_arc(Vector2(sp.x, sp.y), 18, 0, TAU, 24, col, 2.0)
+				hud.draw_arc(Vector2(sp.x, sp.y), 34, 0, TAU, 24, Color(col.r, col.g, col.b, 0.5), 1.5)
+				hud.draw_line(Vector2(sp.x - 46, sp.y), Vector2(sp.x - 22, sp.y), col, 2.0)
+				hud.draw_line(Vector2(sp.x + 22, sp.y), Vector2(sp.x + 46, sp.y), col, 2.0)
+				hud.draw_line(Vector2(sp.x, sp.y + 22), Vector2(sp.x, sp.y + 46), col, 2.0)
+			else:
+				_txt(Vector2(0, c.y), "look down to see the impact point", fs - 4, Color(1, 0.8, 0.6), HORIZONTAL_ALIGNMENT_CENTER, s.x)
+		else:
+			_txt(Vector2(0, c.y + 60), "Bombs can only be dropped in the air", fs - 4, Color(1, 1, 0.7), HORIZONTAL_ALIGNMENT_CENTER, s.x)
+		_txt(Vector2(0, s.y - 80), "[fire] drop bomb   mouse: look   [%s] switch to pilot seat" % _key("seat"), fs - 7, Color(0.85, 0.85, 0.8, 0.8), HORIZONTAL_ALIGNMENT_CENTER, s.x)
+	_txt(Vector2(0, s.y - 110), "BOMBS %d   ALT %d m" % [bombs, int(alt * 30.0)], fs - 2, Color(1, 0.85, 0.5), HORIZONTAL_ALIGNMENT_CENTER, s.x)
 
 
 ## 3D first-person weapon (scripts/viewmodel.gd) rendered in its own SubViewport and drawn over the view.
@@ -1407,7 +1571,7 @@ func _draw_hud() -> void:
 		hud.draw_line(c + Vector2(gap, 0), c + Vector2(gap + 8, 0), w, 2)
 		hud.draw_line(c + Vector2(0, -gap - 8), c + Vector2(0, -gap), w, 2)
 		hud.draw_line(c + Vector2(0, gap), c + Vector2(0, gap + 8), w, 2)
-	elif role == Defs.ROLE_SOLO or role == Defs.ROLE_GUNNER:
+	elif (role == Defs.ROLE_SOLO or role == Defs.ROLE_GUNNER) and my_vtype < Defs.PLANE_FIRST:
 		var g := Color(0.4, 1.0, 0.4, 0.9)
 		hud.draw_arc(c, 26, 0, TAU, 40, g, 2)
 		hud.draw_line(c + Vector2(-60, 0), c + Vector2(-30, 0), g, 2)
@@ -1437,7 +1601,7 @@ func _draw_hud() -> void:
 	if role == Defs.ROLE_SOLO or role == Defs.ROLE_DRIVER or role == Defs.ROLE_GUNNER:
 		_bar(Rect2(pad, y, 240, 22), float(me.thp), Color(0.35, 0.65, 0.3), "HULL %d%%" % int(float(me.thp) * 100.0), fs - 4)
 		y -= 28.0
-		if role != Defs.ROLE_DRIVER:
+		if role != Defs.ROLE_DRIVER and my_vtype < Defs.PLANE_FIRST:
 			var ccd: float = me.ccd
 			_bar(Rect2(pad, y, 240, 22), 1.0 - ccd, Color(0.85, 0.65, 0.2), "CANNON READY" if ccd <= 0.0 else "LOADING", fs - 4)
 			y -= 28.0
@@ -1459,12 +1623,15 @@ func _draw_hud() -> void:
 		var eq: int = me.eqt
 		var gear := "%s  x%d  [%s]" % [Defs.EQUIP_SHORT[eq], int(me.eqn), _key("gear")] if eq != Defs.EQ_AMMO else "AMMO BAG (passive)"
 		_txt(Vector2(0, s.y - pad - 6 - line), gear, fs - 4, Color(0.85, 0.85, 0.85, 0.85), HORIZONTAL_ALIGNMENT_RIGHT, s.x - pad)
+	elif role == Defs.ROLE_GUNNER and my_vtype >= Defs.PLANE_FIRST:
+		wtxt = "%s  BOMBER" % Defs.VEHICLES[my_vtype].name
+		_txt(Vector2(0, s.y - pad - 6 - line), "[%s] exit   [%s] switch seat" % [_key("use"), _key("seat")], fs - 4, Color(0.85, 0.85, 0.8, 0.8), HORIZONTAL_ALIGNMENT_RIGHT, s.x - pad)
 	elif role == Defs.ROLE_SOLO or role == Defs.ROLE_GUNNER:
 		var vsd: Dictionary = Defs.VEHICLES[my_vtype]
 		wtxt = ("%s  %s [fire]%s" % [vsd.name, str(vsd.main).to_upper(), "   MG [alt fire]" if float(vsd.mg_cd) > 0.0 else ""]) if str(vsd.main) != "none" else "%s  MG [fire]" % vsd.name
 		_txt(Vector2(0, s.y - pad - 6 - line), "[%s] exit vehicle   [%s] switch seat" % [_key("use"), _key("seat")], fs - 4, Color(0.85, 0.85, 0.85, 0.8), HORIZONTAL_ALIGNMENT_RIGHT, s.x - pad)
 	elif role == Defs.ROLE_DRIVER:
-		wtxt = ("%s  HULL MG [fire]" % Defs.VEHICLES[my_vtype].name) if bool(Defs.VEHICLES[my_vtype].driver_mg) else "%s  DRIVING" % Defs.VEHICLES[my_vtype].name
+		wtxt = "%s  %s" % [Defs.VEHICLES[my_vtype].name, "PILOT" if my_vtype >= Defs.PLANE_FIRST else "DRIVING"]
 		_txt(Vector2(0, s.y - pad - 6 - line), "[%s] exit vehicle   [%s] switch seat" % [_key("use"), _key("seat")], fs - 4, Color(0.85, 0.85, 0.85, 0.8), HORIZONTAL_ALIGNMENT_RIGHT, s.x - pad)
 	if wtxt != "":
 		_txt(Vector2(0, s.y - pad - 6), wtxt, fs + 2, Color(1, 0.9, 0.6), HORIZONTAL_ALIGNMENT_RIGHT, s.x - pad)
@@ -1478,6 +1645,8 @@ func _draw_hud() -> void:
 
 	if Settings.nametags and not MortarView.manning(me):
 		_draw_nametags(s, fs)
+	if my_vtype >= Defs.PLANE_FIRST and (role == Defs.ROLE_DRIVER or role == Defs.ROLE_GUNNER):
+		_draw_plane_hud(s, role)
 	_draw_objectives(s, fs, pad, line)
 	_draw_teams(s, fs)
 	_draw_minimap(s, pad)

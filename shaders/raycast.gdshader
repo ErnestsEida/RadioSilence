@@ -29,6 +29,11 @@ uniform int weather = 0;           // 0 pollen, 1 dust, 2 snow, 3 embers, -1 non
 uniform float snow_tops = 0.0;
 uniform float weather_amt = 1.0;   // particle density multiplier (storms)
 uniform float lightning = 0.0;
+// WAR mode sky: rockets (x start angle, y birth time, z signed angular travel, w peak height; w = 0 -> unused)
+// and bursts (x angle, y height above horizon, z intensity 0..1, w size)
+uniform vec4 war_rk[8];
+uniform vec4 war_fl[4];
+uniform float war_amb = 0.0;
 uniform float wall_tiles = 16.0;
 uniform float tile_h[17];          // texture repeat height per wall type
 uniform float atlas_grid = 16.0;
@@ -156,6 +161,36 @@ vec3 sky_color(float sy, vec2 ray) {
 	float cl = sin(ang * 5.0 + drift * 6.0 + up * 9.0) * 0.5 + sin(ang * 11.0 - drift * 9.0 - up * 23.0) * 0.3 + sin(ang * 23.0 + drift * 17.0 + up * 41.0) * 0.15;
 	float thr = mix(0.45, -0.55, clouds);
 	if (up > 0.06) c = mix(c, cloud_col * (1.0 + lightning * 1.5), clamp((cl - thr) * 2.0, 0.0, 1.0) * mix(0.22, 0.8, clouds) * clamp((up - 0.06) * 8.0, 0.0, 1.0));
+	// WAR: rocket trails arcing over the battlefield + burst flashes lighting the sky (drawn behind the hills)
+	for (int i = 0; i < 4; i++) {
+		vec4 f = war_fl[i];
+		if (f.z <= 0.001) continue;
+		vec2 dd = vec2(atan(sin(ang - f.x), cos(ang - f.x)), (up - f.y) * 1.6);
+		float r2 = dot(dd, dd) / (f.w * f.w);
+		c += vec3(1.0, 0.62, 0.28) * f.z * (exp(-r2) * 1.4 + exp(-r2 * 0.08) * 0.35);
+		c += vec3(1.0, 0.95, 0.8) * f.z * f.z * smoothstep(0.25, 0.0, r2) * 2.0;
+	}
+	for (int i = 0; i < 8; i++) {
+		vec4 r = war_rk[i];
+		if (r.w <= 0.0) continue;
+		float age = (time - r.y) / 3.2;
+		if (age < 0.0 || age > 1.25) continue;
+		float fa = clamp(age, 0.0, 1.0);
+		float da = atan(sin(ang - r.x), cos(ang - r.x));
+		if (age <= 1.0) {
+			float hd = length(vec2(da - r.z * fa, (up - (0.035 + r.w * sin(3.14159 * fa))) * 1.5));
+			c += vec3(1.0, 0.85, 0.5) * (exp(-hd * hd * 2500.0) * 2.8 + exp(-hd * hd * 300.0) * 0.35);
+		}
+		float f = da / r.z;                       // where along the arc this pixel column sits
+		if (f < -0.02 || f > fa) continue;
+		float hy = 0.035 + r.w * sin(3.14159 * clamp(f, 0.0, 1.0));
+		float dist = abs(up - hy);
+		float tail = fa - f;                       // 0 at the head
+		float fade = (age > 1.0 ? 1.0 - (age - 1.0) * 4.0 : 1.0);
+		float w = 0.006 + tail * 0.014;
+		c += vec3(1.0, 0.5, 0.18) * smoothstep(w, 0.0, dist) * exp(-tail * 3.0) * 1.6 * fade;
+		c += vec3(0.6, 0.55, 0.5) * smoothstep(w * 3.0, 0.0, dist) * exp(-tail * 1.5) * 0.12 * fade;   // smoke trail
+	}
 	float m = 0.06 + 0.03 * sin(ang * 3.0) + 0.02 * sin(ang * 7.0 + 1.3) + 0.012 * sin(ang * 17.0);
 	if (up < m) c = mix(mount_col, c, 0.25);
 	float m2 = 0.035 + 0.02 * sin(ang * 5.0 + 2.0) + 0.01 * sin(ang * 13.0);
@@ -298,7 +333,7 @@ void fragment() {
 	}
 
 	// lighting setup: time-of-day ambient (+ lightning flash, interiors keep their ceiling lights)
-	vec3 amb = mix(ambient, max(ambient, vec3(0.72, 0.7, 0.62)), indoor) + vec3(0.8, 0.85, 1.0) * lightning * 1.1;
+	vec3 amb = mix(ambient, max(ambient, vec3(0.72, 0.7, 0.62)), indoor) + vec3(0.8, 0.85, 1.0) * lightning * 1.1 + vec3(1.0, 0.6, 0.3) * war_amb * (1.0 - indoor);
 	float amb_l = max(0.12, dot(amb, vec3(0.3, 0.59, 0.11)));
 	vec3 hp = vec3(cam_pos + ray * thit, eye + s * thit);
 	vec3 nrm = vec3(0.0, 0.0, 1.0);

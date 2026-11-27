@@ -82,6 +82,8 @@ const MODE_WAR := 3
 const MODE_NAMES := ["HEIST", "CAPTURE THE FLAG", "TEAM DEATHMATCH", "WAR SIMULATOR"]
 const MODE_UNITS := ["pts", "captures", "kills", "pts"]
 const MODE_SCORES := [[1500, 2500, 4000, 999999], [3, 5, 8, 999999], [25, 40, 60, 999999], [100, 150, 250, 999999]]
+const GROUND_VEHICLES := 5   # VEHICLES[0..4] are ground vehicles (pickers, random picks); 5..7 are planes
+const PLANE_FIRST := 5
 const E_POINT := 33        # WAR capture point: team = owner (-1 neutral), hp = capture progress, aux = point index
 const POINT_NAMES := ["A", "B", "C"]
 const E_FLAG := 30         # team flag: fl = state (0 home, 1 carried, 2 dropped), aux = z
@@ -230,6 +232,19 @@ const VEHICLES := [
 	{"name": "ROCKET TRUCK", "hp": 260.0, "speed": 5.2, "rev": 2.6, "turn": 1.8, "r": 0.6, "armor": 0.3,
 		"main": "rockets", "main_cd": 1.3, "main_dmg": 115.0, "splash": 2.3, "shell_speed": 11.0,
 		"mg_cd": 0.0, "mg_dmg": 0.0, "driver_mg": false, "desc": "Rocket launcher with huge splash. Breaks gates fast."},
+	# ---- planes (WAR only): pilot flies, bomber drops bombs. speed = top speed, takeoff = lift-off speed
+	{"name": "FIGHTER-BOMBER", "hp": 170.0, "speed": 10.0, "rev": 0.0, "turn": 0.95, "r": 0.9, "armor": 0.35,
+		"main": "none", "main_cd": 0.0, "main_dmg": 0.0, "splash": 0.0, "shell_speed": 0.0, "mg_cd": 0.0, "mg_dmg": 0.0,
+		"driver_mg": false, "plane": true, "takeoff": 5.0, "accel": 2.4, "bombs": 4, "bomb_dmg": 150.0, "bomb_splash": 2.4,
+		"desc": "Fast and agile. 4 light bombs."},
+	{"name": "HEAVY BOMBER", "hp": 420.0, "speed": 7.0, "rev": 0.0, "turn": 0.5, "r": 1.2, "armor": 0.2,
+		"main": "none", "main_cd": 0.0, "main_dmg": 0.0, "splash": 0.0, "shell_speed": 0.0, "mg_cd": 0.0, "mg_dmg": 0.0,
+		"driver_mg": false, "plane": true, "takeoff": 4.0, "accel": 1.4, "bombs": 10, "bomb_dmg": 160.0, "bomb_splash": 2.6,
+		"desc": "Slow, tough, 10 bombs."},
+	{"name": "DIVE BOMBER", "hp": 230.0, "speed": 8.5, "rev": 0.0, "turn": 0.75, "r": 0.95, "armor": 0.3,
+		"main": "none", "main_cd": 0.0, "main_dmg": 0.0, "splash": 0.0, "shell_speed": 0.0, "mg_cd": 0.0, "mg_dmg": 0.0,
+		"driver_mg": false, "plane": true, "takeoff": 4.5, "accel": 1.9, "bombs": 2, "bomb_dmg": 320.0, "bomb_splash": 3.4,
+		"desc": "Two huge bombs. Dive to aim."},
 ]
 const V_TANK := 0
 const V_BRONEVIKS := 1

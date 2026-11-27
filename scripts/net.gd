@@ -9,9 +9,10 @@ signal connection_lost(reason: String)
 signal peer_left(peer: int)
 
 const Discovery = preload("res://scripts/discovery.gd")
+const Defs = preload("res://scripts/defs.gd")
 
 const DEFAULT_PORT := 7777
-const MAX_PLAYERS := 16
+const MAX_PLAYERS := 32   # WAR is 16 v 16
 
 var players := {}    # peer_id -> {"name": String, "team": int}
 var lobby_cfg := {"map": 0, "fill": true, "size": 4}
@@ -88,6 +89,8 @@ func beacon_info() -> Dictionary:
 
 
 func team_size() -> int:
+	if int(lobby_cfg.get("mode", 0)) == Defs.MODE_WAR:
+		return 16   # WAR is always 16 v 16
 	var s := int(lobby_cfg.get("size", 4))
 	return 8 if s >= 8 else (4 if s >= 4 else 2)   # players per team (16 or 8 total, split over 2 or 4 teams)
 
@@ -122,6 +125,8 @@ func slot_player(team: int, slot: int) -> int:
 
 
 func team_count() -> int:
+	if int(lobby_cfg.get("mode", 0)) == Defs.MODE_WAR:
+		return 2
 	return 2 if int(lobby_cfg.get("teams", 4)) == 2 else 4
 
 

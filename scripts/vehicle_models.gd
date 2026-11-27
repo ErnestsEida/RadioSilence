@@ -25,12 +25,18 @@ const BRONEVIKS := 1
 const MOTO := 2
 const JEEP := 3
 const ROCKET := 4
-const NUM_TYPES := 5
+const FIGHTER := 5
+const HEAVY := 6
+const DIVE := 7
+const NUM_TYPES := 8
+## planes: height of the propeller axis (the "turret" part spins around +X there); 0 = no spinning prop part
+const PROP_Y := [0.0, 0.0, 0.0, 0.0, 0.0, 0.55, 0.0, 0.6]
 const PAINT := "paint"
 const WIND := 1.0
 
 ## turret pivot offset from the vehicle origin, Vector2(forward, right), hull frame
-const TURRET_PIVOT := [Vector2(0.06, 0.0), Vector2(-0.22, 0.0), Vector2(-0.02, 0.17), Vector2(-0.25, 0.0), Vector2(-0.32, 0.0)]
+const TURRET_PIVOT := [Vector2(0.06, 0.0), Vector2(-0.22, 0.0), Vector2(-0.02, 0.17), Vector2(-0.25, 0.0), Vector2(-0.32, 0.0),
+	Vector2(1.27, 0.0), Vector2(1.95, 0.0), Vector2(1.37, 0.0)]
 ## first-person camera positions (hull frame, turret at rest): [driver, gunner] per vtype
 const SEAT := [
 	[Vector3(-0.14, 0.78, -0.2), Vector3(-0.18, 0.78, -0.12)],
@@ -38,6 +44,9 @@ const SEAT := [
 	[Vector3(-0.06, 0.66, -0.17), Vector3(-0.12, 0.66, 0.17)],
 	[Vector3(-0.08, 0.74, -0.16), Vector3(-0.61, 0.74, 0.0)],
 	[Vector3(0.18, 0.8, -0.18), Vector3(-0.8, 0.8, -0.4)],
+	[Vector3(0.1, 0.8, 0.0), Vector3(-0.2, 0.8, 0.0)],
+	[Vector3(1.2, 0.95, 0.0), Vector3(1.7, 0.7, 0.0)],
+	[Vector3(0.25, 0.85, 0.0), Vector3(-0.15, 0.85, 0.0)],
 ]
 
 static var _M: Dictionary = {}
@@ -146,6 +155,12 @@ static func build(vtype: int, part: String, wreck: bool) -> Node3D:
 				_moto_hull(body)
 			JEEP:
 				_jeep_hull(body)
+			FIGHTER:
+				_fighter_hull(body)
+			HEAVY:
+				_heavy_hull(body)
+			DIVE:
+				_dive_hull(body)
 			_:
 				_truck_hull(body)
 		if wreck:
@@ -165,6 +180,10 @@ static func build(vtype: int, part: String, wreck: bool) -> Node3D:
 				_moto_turret(t)
 			JEEP:
 				_jeep_turret(t)
+			FIGHTER, DIVE:
+				_prop(t, 0.78 if vtype == FIGHTER else 0.86)
+			HEAVY:
+				_heavy_nose(t)
 			_:
 				_truck_turret(t)
 		if wreck:
@@ -899,6 +918,119 @@ static func _jeep_turret(t: Node3D) -> void:
 
 
 # --------------------------------------------------------- ROCKET TRUCK ----
+
+# ------------------------------------------------------------ planes ----
+
+## Roundel (team paint ring with a white centre) on a wing top / fuselage side.
+static func _roundel(b: Node3D, c: Vector3, axis: Vector3, r: float) -> void:
+	_cyl(b, c, c + axis * 0.006, r, r, PAINT, 12)
+	_cyl(b, c + axis * 0.006, c + axis * 0.012, r * 0.62, r * 0.62, "white", 12)
+	_cyl(b, c + axis * 0.012, c + axis * 0.016, r * 0.28, r * 0.28, "red", 10)
+
+
+static func _gear(b: Node3D, x: float, z: float, top: float, r: float) -> void:
+	_box(b, Vector3(x, (top + r) * 0.5, z), Vector3(0.035, top - r, 0.035), "dark")
+	_cyl(b, Vector3(x, r, z - 0.035), Vector3(x, r, z + 0.035), r, r, "tyre", 12)
+
+
+## Single-engine fighter-bomber: ~2.4 long, 3.0 wingspan.
+static func _fighter_hull(b: Node3D) -> void:
+	var y := 0.55
+	_cyl(b, Vector3(-1.15, y + 0.08, 0), Vector3(-0.2, y, 0), 0.07, 0.19, PAINT, 12)
+	_cyl(b, Vector3(-0.2, y, 0), Vector3(1.05, y, 0), 0.19, 0.2, PAINT, 12)
+	_cyl(b, Vector3(1.05, y, 0), Vector3(1.24, y, 0), 0.2, 0.15, "dark", 12)
+	for s: float in [-1.0, 1.0]:
+		_cyl(b, Vector3(0.9, y + 0.12, s * 0.15), Vector3(0.6, y + 0.1, s * 0.17), 0.025, 0.025, "steel", 6)   # exhausts
+	# wings (slight dihedral) + tips
+	for s: float in [-1.0, 1.0]:
+		_box(b, Vector3(0.3, y - 0.1 + 0.04, s * 0.78), Vector3(0.62, 0.05, 1.4), PAINT, 0.01, Vector3(s * -3.0, 0, 0))
+		_box(b, Vector3(0.24, y - 0.04 + 0.05, s * 1.5), Vector3(0.42, 0.04, 0.12), PAINT, 0.01, Vector3(s * -3.0, 0, 0))
+		_roundel(b, Vector3(0.28, y - 0.03, s * 1.15), Vector3.UP, 0.15)
+		_gear(b, 0.42, s * 0.48, y - 0.1, 0.1)
+		# light bombs under the wings
+		_cyl(b, Vector3(0.12, y - 0.24, s * 0.85), Vector3(0.55, y - 0.24, s * 0.85), 0.05, 0.05, "olive", 8)
+		_box(b, Vector3(0.1, y - 0.24, s * 0.85), Vector3(0.06, 0.12, 0.012), "olive")
+	# canopy + tail
+	_sphere(b, Vector3(0.12, y + 0.17, 0), 0.15, "glass", 10, true)
+	_box(b, Vector3(-0.15, y + 0.17, 0), Vector3(0.36, 0.1, 0.22), PAINT, 0.03)
+	_box(b, Vector3(-1.02, y + 0.1, 0), Vector3(0.3, 0.03, 0.95), PAINT, 0.01)
+	_box(b, Vector3(-1.06, y + 0.3, 0), Vector3(0.28, 0.38, 0.03), PAINT, 0.01, Vector3(0, 0, 12))
+	_box(b, Vector3(-1.08, y + 0.4, 0), Vector3(0.14, 0.12, 0.035), "white")
+	_gear(b, -1.05, 0.0, y, 0.05)
+	_roundel(b, Vector3(-0.55, y + 0.02, 0.19), Vector3(0, 0, 1), 0.11)
+	_roundel(b, Vector3(-0.55, y + 0.02, -0.19), Vector3(0, 0, -1), 0.11)
+
+
+## Spinning propeller (authored around the axis at the origin, +X forward).
+static func _prop(t: Node3D, span: float) -> void:
+	_cyl(t, Vector3(-0.03, 0, 0), Vector3(0.1, 0, 0), 0.07, 0.025, "steel", 10)
+	_box(t, Vector3(0.02, 0, 0), Vector3(0.02, span, 0.07), "dark", 0.0, Vector3(25, 0, 0))
+	_box(t, Vector3(0.02, 0, 0), Vector3(0.02, 0.07, span), "dark", 0.0, Vector3(25, 0, 0))
+	_box(t, Vector3(0.02, span * 0.47, 0), Vector3(0.025, 0.05, 0.075), "brass")
+	_box(t, Vector3(0.02, -span * 0.47, 0), Vector3(0.025, 0.05, 0.075), "brass")
+
+
+## Twin-engine heavy bomber: ~3.6 long, 4.6 wingspan, glazed nose, prop discs on both engines.
+static func _heavy_hull(b: Node3D) -> void:
+	var y := 0.75
+	_cyl(b, Vector3(-1.75, y + 0.12, 0), Vector3(-0.6, y, 0), 0.1, 0.3, PAINT, 14)
+	_cyl(b, Vector3(-0.6, y, 0), Vector3(1.5, y, 0), 0.3, 0.3, PAINT, 14)
+	_cyl(b, Vector3(1.5, y, 0), Vector3(1.85, y - 0.03, 0), 0.3, 0.2, PAINT, 14)
+	_box(b, Vector3(1.0, y + 0.3, 0), Vector3(0.4, 0.12, 0.3), "glass", 0.04)
+	for s: float in [-1.0, 1.0]:
+		_box(b, Vector3(0.3, y - 0.05, s * 1.25), Vector3(0.8, 0.07, 2.1), PAINT, 0.015)
+		_box(b, Vector3(0.22, y - 0.04, s * 2.35), Vector3(0.5, 0.05, 0.2), PAINT, 0.01)
+		_roundel(b, Vector3(0.3, y, s * 1.7), Vector3.UP, 0.22)
+		# engine nacelle + prop disc (blur) + exhausts
+		var ez := s * 0.95
+		_cyl(b, Vector3(-0.2, y - 0.06, ez), Vector3(0.9, y - 0.06, ez), 0.12, 0.17, PAINT, 12)
+		_cyl(b, Vector3(0.9, y - 0.06, ez), Vector3(1.02, y - 0.06, ez), 0.17, 0.12, "dark", 12)
+		_cyl(b, Vector3(1.05, y - 0.06, ez), Vector3(1.06, y - 0.06, ez), 0.55, 0.55, "glass", 18)
+		_cyl(b, Vector3(1.02, y - 0.06, ez), Vector3(1.1, y - 0.06, ez), 0.05, 0.02, "steel", 8)
+		_gear(b, 0.45, ez, y - 0.2, 0.16)
+	# bomb bay doors, tail with twin fins
+	_box(b, Vector3(0.0, y - 0.29, 0), Vector3(1.0, 0.03, 0.34), "dark")
+	_box(b, Vector3(-1.6, y + 0.14, 0), Vector3(0.4, 0.04, 1.5), PAINT, 0.01)
+	for s: float in [-1.0, 1.0]:
+		_box(b, Vector3(-1.66, y + 0.38, s * 0.72), Vector3(0.32, 0.5, 0.035), PAINT, 0.01, Vector3(0, 0, 10))
+	_sphere(b, Vector3(-1.7, y + 0.2, 0), 0.1, "glass", 8)   # tail gunner
+	_gear(b, -1.6, 0.0, y, 0.07)
+	_roundel(b, Vector3(-0.8, y + 0.05, 0.3), Vector3(0, 0, 1), 0.15)
+	_roundel(b, Vector3(-0.8, y + 0.05, -0.3), Vector3(0, 0, -1), 0.15)
+
+
+## Heavy bomber "turret": glazed nose with a gun (static).
+static func _heavy_nose(t: Node3D) -> void:
+	_sphere(t, Vector3(-0.08, 0.72, 0), 0.2, "glass", 12)
+	_cyl(t, Vector3(0.0, 0.7, 0), Vector3(0.3, 0.7, 0), 0.02, 0.02, "gun", 6)
+
+
+## Dive bomber: inverted-gull wings, long two-seat canopy, spatted fixed gear, one big bomb under the belly.
+static func _dive_hull(b: Node3D) -> void:
+	var y := 0.6
+	_cyl(b, Vector3(-1.3, y + 0.1, 0), Vector3(-0.2, y, 0), 0.07, 0.21, PAINT, 12)
+	_cyl(b, Vector3(-0.2, y, 0), Vector3(1.15, y, 0), 0.21, 0.21, PAINT, 12)
+	_cyl(b, Vector3(1.15, y, 0), Vector3(1.34, y, 0), 0.21, 0.16, "dark", 12)
+	_box(b, Vector3(0.05, y + 0.18, 0), Vector3(0.9, 0.14, 0.2), "glass", 0.04)
+	for s: float in [-1.0, 1.0]:
+		# gull wing: inner panel angled down, outer panel up
+		_box(b, Vector3(0.35, y - 0.18, s * 0.42), Vector3(0.62, 0.05, 0.6), PAINT, 0.01, Vector3(s * 18.0, 0, 0))
+		_box(b, Vector3(0.3, y - 0.12, s * 1.2), Vector3(0.55, 0.05, 1.05), PAINT, 0.01, Vector3(s * -7.0, 0, 0))
+		_roundel(b, Vector3(0.3, y - 0.08, s * 1.3), Vector3.UP, 0.15)
+		# spatted gear at the wing bend
+		_box(b, Vector3(0.38, y - 0.4, s * 0.68), Vector3(0.06, 0.35, 0.06), PAINT)
+		_cyl(b, Vector3(0.28, 0.12, s * 0.68), Vector3(0.55, 0.12, s * 0.68), 0.06, 0.1, PAINT, 10)
+		_cyl(b, Vector3(0.38, 0.11, s * 0.68 - 0.035), Vector3(0.38, 0.11, s * 0.68 + 0.035), 0.1, 0.1, "tyre", 10)
+		# dive brakes under the wings
+		_box(b, Vector3(0.1, y - 0.3, s * 1.1), Vector3(0.04, 0.1, 0.6), "dark")
+	_cyl(b, Vector3(-0.1, y - 0.36, 0), Vector3(0.6, y - 0.36, 0), 0.09, 0.09, "olive", 10)
+	_box(b, Vector3(-0.12, y - 0.36, 0), Vector3(0.08, 0.2, 0.02), "olive")
+	_box(b, Vector3(-1.2, y + 0.12, 0), Vector3(0.3, 0.035, 1.0), PAINT, 0.01)
+	_box(b, Vector3(-1.24, y + 0.34, 0), Vector3(0.3, 0.42, 0.035), PAINT, 0.01, Vector3(0, 0, 8))
+	_gear(b, -1.2, 0.0, y, 0.05)
+	_roundel(b, Vector3(-0.6, y + 0.02, 0.21), Vector3(0, 0, 1), 0.12)
+	_roundel(b, Vector3(-0.6, y + 0.02, -0.21), Vector3(0, 0, -1), 0.12)
+
 
 static func _truck_hull(b: Node3D) -> void:
 	_box(b, Vector3(-0.03, 0.27, 0.0), Vector3(1.56, 0.07, 0.44), "dark")

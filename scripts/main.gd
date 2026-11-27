@@ -31,6 +31,7 @@ class LocalP:
 	var yaw := 0.0
 	var pitch := 0.0
 	var drv_look := 0.0   # driver free-look offset from the hull heading
+	var psteer := 0.0     # plane pilot: mouse left/right = control stick (-1..1), slowly re-centres
 	var role := 0
 	var epoch := -1
 	var use_count := 0
@@ -110,6 +111,7 @@ var time_pick: OptionButton
 var score_pick: OptionButton
 var lobby_list: Label
 var lobby_name: LineEdit
+var ev_hold := PackedFloat32Array()   # host: events of WAR frames whose snapshot wasn't sent
 var ui_key := ""
 var lobby_info: Label
 var lobby_map: OptionButton
@@ -359,7 +361,7 @@ func _build_ui() -> void:
 	var vr := _row(vb)
 	_lbl90(vr, "Vehicle")
 	vehicle_pick = OptionButton.new()
-	for v in Defs.VEHICLES:
+	for v in Defs.VEHICLES.slice(0, Defs.GROUND_VEHICLES):
 		vehicle_pick.add_item(v.name)
 	vr.add_child(vehicle_pick)
 	vehicle_desc = _label(vr, Defs.VEHICLES[0].desc, 13, Color(0.75, 0.78, 0.7))
@@ -422,7 +424,9 @@ func _build_ui() -> void:
 	lobby_name.focus_exited.connect(_on_lobby_name)
 	nrow.add_child(lobby_name)
 	_button(nrow, "RENAME", _on_lobby_name)
-	lobby_list = _label(lv, "", 22)
+	lobby_list = _label(lv, "", 20)
+	lobby_list.autowrap_mode = TextServer.AUTOWRAP_WORD
+	lobby_list.custom_minimum_size = Vector2(900, 0)
 	var th := _row(lv)
 	_label(th, "Join team:", 18)
 	lobby_team_btns = []
@@ -437,7 +441,7 @@ func _build_ui() -> void:
 	var vrow := _row(lv)
 	_label(vrow, "Your vehicle:", 18)
 	lobby_vehicle = OptionButton.new()
-	for v in Defs.VEHICLES:
+	for v in Defs.VEHICLES.slice(0, Defs.GROUND_VEHICLES):
 		lobby_vehicle.add_item(v.name)
 	lobby_vehicle.item_selected.connect(_on_lobby_vehicle)
 	vrow.add_child(lobby_vehicle)
@@ -885,7 +889,11 @@ func _player_name() -> String:
 func _add_bots(roster: Array, team: int, count: int) -> void:
 	for i in count:
 		var pid := 100 + roster.size()
-		roster.append({"pid": pid, "peer": 0, "name": Defs.BOT_NAMES[pid % Defs.BOT_NAMES.size()], "team": team, "bot": true})
+		var n := Defs.BOT_NAMES.size()
+		var k := pid - 100
+		# 30 bots in a 16 v 16 war: names get a number once the list wraps ("Opus 2")
+		var nm: String = Defs.BOT_NAMES[k % n] + ("" if k < n else " %d" % (k / n + 1))
+		roster.append({"pid": pid, "peer": 0, "name": nm, "team": team, "bot": true})
 
 
 func _match_cfg(roster: Array, map_i: int, team_size := 2, game_mode := 0, n_teams := 4) -> Dictionary:
@@ -938,6 +946,16 @@ func _on_mode_picked(i: int) -> void:
 	if score_pick == null:
 		return
 	var scores: Array = Defs.MODE_SCORES[clampi(i, 0, Defs.MODE_SCORES.size() - 1)]
+	# WAR: always 2 teams of 16 - the team / player pickers are locked
+	var war := i == Defs.MODE_WAR
+	if ai_pick != null and size_pick != null:
+		ai_pick.disabled = war
+		size_pick.disabled = war
+		size_pick.set_item_text(0, "32 players  (WAR: 16 v 16, 2 teams)" if war else "16 players  (1v1: 8 per team / 1v1v1v1: 4 per team)")
+		ai_pick.set_item_text(1, "Teams: 2  (WAR: 16 v 16)" if war else "Teams: 2  (1v1 - opposite corners)")
+		if war:
+			size_pick.select(0)
+			ai_pick.select(1)
 	for k in scores.size():
 		var sc: int = scores[k]
 		score_pick.set_item_text(k, "no score limit" if sc > 99999 else "first to %d %s" % [sc, Defs.MODE_UNITS[i]])
@@ -948,6 +966,9 @@ func _start_local(m: String) -> void:
 	var n_teams: int = 2 if ai_pick.selected == 1 else 4
 	# total players is fixed (16 or 8); 1v1 makes big teams, 1v1v1v1 small ones
 	var ts: int = (8 if size_pick.selected == 1 else 16) / n_teams
+	if mode_pick.selected == Defs.MODE_WAR:
+		n_teams = 2
+		ts = 16   # WAR is always 16 v 16
 	if m == "coop":
 		roster.append({"pid": 2, "peer": 1, "name": "Player 2", "team": 0, "loadout": [Defs.W_SMG, Defs.W_PISTOL, Defs.EQ_MEDKIT]})
 		_add_bots(roster, 0, ts - 2)
@@ -982,6 +1003,9 @@ func _push_lobby_cfg() -> void:
 		Net.lobby_cfg["tod"] = lobby_tod.selected
 		Net.lobby_cfg["mode"] = lobby_mode.selected
 		Net.lobby_cfg["teams"] = 2 if lobby_teams.selected == 1 else 4
+		if lobby_mode.selected == Defs.MODE_WAR:
+			Net.lobby_cfg["teams"] = 2
+			Net.lobby_cfg["size"] = 16
 		Net.fit_teams()   # players on teams that no longer play move to an active one
 		Net.sync_lobby.rpc(Net.players, Net.lobby_cfg)
 
@@ -1014,6 +1038,14 @@ func _on_lobby_changed() -> void:
 	lobby_tod.disabled = not host
 	lobby_mode.disabled = not host
 	lobby_teams.disabled = not host
+	var war_lobby: bool = int(Net.lobby_cfg.get("mode", 0)) == Defs.MODE_WAR
+	if war_lobby:
+		lobby_size.disabled = true
+		lobby_teams.disabled = true
+	lobby_size.set_item_text(0, "32 players (16 v 16)" if war_lobby else "16 players")
+	if war_lobby:
+		lobby_size.select(0)
+		lobby_teams.select(1)
 	if not host:
 		lobby_map.select(int(Net.lobby_cfg.get("map", 0)))
 		lobby_fill.button_pressed = bool(Net.lobby_cfg.get("fill", true))
@@ -1271,7 +1303,10 @@ func _input(event: InputEvent) -> void:
 					if lp.view != null and lp.ads:
 						z = lerpf(1.0, float(Defs.WPN[lp.view.last_weapon if lp.view.last_weapon >= 0 else 0].zoom), lp.view.ads_t)
 					var dx := mm.relative.x * MOUSE_SENS * Settings.sens / z
-					if lp.role == Defs.ROLE_DRIVER:
+					var pilot: bool = lp.role == Defs.ROLE_DRIVER and lp.view != null and int(lp.view.my_vtype) >= Defs.PLANE_FIRST
+					if pilot:
+						lp.psteer = clampf(lp.psteer + dx * 2.2, -1.0, 1.0)   # plane: the mouse is the stick
+					elif lp.role == Defs.ROLE_DRIVER:
 						lp.drv_look = clampf(lp.drv_look + dx, -2.4, 2.4)   # driver looks around, the hull keeps its course
 					else:
 						lp.yaw += dx
@@ -1310,7 +1345,18 @@ func _physics_process(delta: float) -> void:
 			world.step(delta)
 		var s: Dictionary = world.snapshot()
 		if mode == "host":
-			Net.snapshot.rpc(s)
+			# WAR (32 players): clients get 30 snapshots/s; events of skipped frames ride along with the next one
+			if world.mode == Defs.MODE_WAR and Engine.get_physics_frames() % 2 == 1:
+				ev_hold.append_array(s.ev)
+			else:
+				var out: Dictionary = s
+				if not ev_hold.is_empty():
+					out = s.duplicate(false)
+					var ev2 := ev_hold.duplicate()
+					ev2.append_array(s.ev)
+					out["ev"] = ev2
+					ev_hold.clear()
+				Net.snapshot.rpc(out)
 		_apply_snapshot(s)
 
 
@@ -1461,7 +1507,21 @@ func _read_input(lp, rec: Dictionary, dt: float) -> Array:
 		if lim.x > -PI:
 			var hull: float = lp.view.my_hull
 			lp.yaw = hull + clampf(angle_difference(hull, lp.yaw), lim.x, lim.y)
-	if role == Defs.ROLE_DRIVER:
+	var in_plane: bool = lp.view != null and int(lp.view.my_vtype) >= Defs.PLANE_FIRST and role != Defs.ROLE_FOOT and role != Defs.ROLE_DEAD
+	if in_plane and role == Defs.ROLE_DRIVER:
+		lp.pitch = clampf(lp.pitch, -0.7, 0.7)   # pilot: mouse up/down = climb / dive
+		if lp.device == "kbm":
+			# mouse steers (stick position, eases back to centre); A/D do nothing, W/S stay throttle
+			mx = lp.psteer
+			lp.psteer = move_toward(lp.psteer, 0.0, dt * 0.5)
+			lp.drv_look = 0.0
+	else:
+		lp.psteer = 0.0
+	if in_plane and role == Defs.ROLE_DRIVER:
+		pass
+	elif in_plane:
+		lp.pitch = clampf(lp.pitch, -1.3, 0.3)   # bomber: look down through the bombsight
+	elif role == Defs.ROLE_DRIVER:
 		lp.pitch = 0.0   # the driver only looks left/right (up/down breaks the cockpit view)
 	elif role == Defs.ROLE_SOLO or role == Defs.ROLE_GUNNER:
 		# gun elevation limits
@@ -1724,6 +1784,39 @@ func _shot_step() -> void:
 			p.yaw = -PI * 0.5
 			p.epoch += 1
 			locals[0].pitch = 0.45
+		elif shot_mode == "airfield" or shot_mode == "plane" or shot_mode == "bomber":
+			# WAR planes: parked line-up seen from the ground / flying as pilot or bomber with an enemy plane ahead
+			world._exit_tank(p)
+			var mine = null
+			var foe = null
+			for t in world.tanks:
+				if world._is_plane(t) and t.team == p.team and mine == null:
+					mine = t
+				elif world._is_plane(t) and t.team != p.team and foe == null:
+					foe = t
+			if mine != null and shot_mode == "airfield":
+				p.pos = mine.pos + Vector2.from_angle(mine.hull + PI * 0.75) * 4.0
+				p.yaw = (mine.pos - p.pos).angle() - 0.2
+				p.epoch += 1
+				locals[0].pitch = 0.05
+			elif mine != null:
+				world._enter_tank(p, mine)
+				if shot_mode == "bomber":
+					world._switch_seat(p)
+				mine.z = 7.0
+				mine.speed = 8.0
+				mine.ppitch = 0.0
+				mine.hull = (Vector2(mapdata.W * 0.5, mapdata.H * 0.5) - mine.pos).angle()
+				mine.pos += Vector2.from_angle(mine.hull) * 15.0
+				p.yaw = mine.hull
+				p.epoch += 1
+				locals[0].pitch = -0.15 if shot_mode == "plane" else -1.0
+				if foe != null:
+					foe.pos = mine.pos + Vector2.from_angle(mine.hull) * 9.0 + Vector2.from_angle(mine.hull + PI * 0.5) * 1.5
+					foe.z = 7.8
+					foe.hull = mine.hull + 0.4
+					foe.speed = 9.5
+					foe.bank = 0.4
 		elif shot_mode == "items":
 			# an armor vest and a few dropped guns on open ground in front of the player
 			world._exit_tank(p)

@@ -24,11 +24,12 @@ const FAR := 90.0
 const L_COL := 1
 const L_DEPTH := 2
 ## elevation trunnion in the Gun node's local frame, per vtype
-const ELEV_PIVOT := [Vector3.ZERO, Vector3.ZERO, Vector3(0.18, 0.555, 0.0), Vector3(0.0, 0.645, 0.0), Vector3.ZERO]
-const ELEV_MIN := [-0.17, -0.17, -0.3, -0.3, -0.05]
-const ELEV_MAX := [0.35, 0.35, 0.7, 0.9, 0.8]
-const RECOIL := [0.08, 0.05, 0.015, 0.015, 0.0]
-const FLASH_SIZE := [1.6, 1.25, 0.6, 0.75, 0.0]
+const ELEV_PIVOT := [Vector3.ZERO, Vector3.ZERO, Vector3(0.18, 0.555, 0.0), Vector3(0.0, 0.645, 0.0), Vector3.ZERO,
+	Vector3.ZERO, Vector3.ZERO, Vector3.ZERO]
+const ELEV_MIN := [-0.17, -0.17, -0.3, -0.3, -0.05, 0.0, 0.0, 0.0]
+const ELEV_MAX := [0.35, 0.35, 0.7, 0.9, 0.8, 0.0, 0.0, 0.0]
+const RECOIL := [0.08, 0.05, 0.015, 0.015, 0.0, 0.0, 0.0, 0.0]
+const FLASH_SIZE := [1.6, 1.25, 0.6, 0.75, 0.0, 0.0, 0.0, 0.0]
 
 const DEPTH_SHADER := """
 shader_type spatial;
@@ -102,6 +103,13 @@ class VInst:
 	var seen := false
 	var last_seen := 0.0
 	var phase := 0.0
+	# planes
+	var plane := false
+	var alt := 0.0
+	var bank := 0.0
+	var shadow: MeshInstance3D
+	var sh_scale := Vector3.ONE
+	var sh_off := Vector3.ZERO
 
 
 static var _parts: Dictionary = {}
@@ -431,6 +439,10 @@ func _build(vt: int, wreck: bool, team: int) -> VInst:
 	sh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	sh.transform = Transform3D(Basis.from_scale(Vector3(ex.size.x * 1.2, 1.0, ex.size.z * 1.25)), Vector3(ex.get_center().x, 0.012, ex.get_center().z))
 	vi.root.add_child(sh)
+	vi.shadow = sh
+	vi.sh_scale = Vector3(ex.size.x * 1.2, 1.0, ex.size.z * 1.25)
+	vi.sh_off = Vector3(ex.get_center().x, 0.0, ex.get_center().z)
+	vi.plane = vt >= VM.FIGHTER
 	var shd := MeshInstance3D.new()
 	shd.mesh = _shadow_mesh
 	shd.material_override = _depth_shadow_mat
@@ -443,7 +455,7 @@ func _build(vt: int, wreck: bool, team: int) -> VInst:
 	_mesh(vi.chassis, p.body, p.body_xf, vi)
 	var pv: Vector2 = VM.TURRET_PIVOT[vt]
 	vi.yaw_n = Node3D.new()
-	vi.yaw_n.position = Vector3(pv.x, 0.0, pv.y)
+	vi.yaw_n.position = Vector3(pv.x, float(VM.PROP_Y[vt]), pv.y)
 	vi.chassis.add_child(vi.yaw_n)
 	var tmi := _mesh(vi.yaw_n, p.tur, p.tur_xf, vi)
 	if p.gun != null:
@@ -497,6 +509,23 @@ func _build(vt: int, wreck: bool, team: int) -> VInst:
 	return vi
 
 
+## Planes fly: altitude + pitch + bank on the root, shadow stays on the ground, the prop spins.
+func _pose_plane(vi: VInst) -> void:
+	var yaw_b := Basis(Vector3.UP, -vi.hull)
+	var b := yaw_b * Basis(Vector3(0, 0, 1), vi.pitch) * Basis(Vector3(1, 0, 0), vi.bank * 0.9)
+	vi.root.transform = Transform3D(b, Vector3(vi.pos.x, vi.alt, vi.pos.y))
+	vi.chassis.position = Vector3.ZERO
+	vi.chassis.rotation = Vector3.ZERO
+	if vi.shadow != null and vi.shadow.is_inside_tree():
+		var shrink := 1.0 / (1.0 + vi.alt * 0.08)
+		var off: Vector3 = yaw_b * vi.sh_off
+		vi.shadow.global_transform = Transform3D(yaw_b * Basis.from_scale(vi.sh_scale * shrink), Vector3(vi.pos.x + off.x, 0.012, vi.pos.y + off.z))
+		vi.shadow.visible = vi.alt < 9.0
+	if not vi.wreck:
+		var spin := 55.0 if vi.moving else 9.0
+		vi.yaw_n.rotation = Vector3(fmod((_time + vi.phase) * spin, TAU), 0.0, 0.0)
+
+
 # --------------------------------------------------------------- per frame ----
 
 func begin() -> void:
@@ -525,7 +554,16 @@ func push(id: int, wreck: bool, vtype: int, pos: Vector2, hull: float, turret: f
 		_paint(vi, _parts_for(vt, wreck))
 	var pb := (fl >> 12) & 255
 	var pitch := 0.0 if pb == 0 or wreck else float(pb) / 127.5 - 1.0
-	pitch = clampf(pitch, float(ELEV_MIN[vt]), float(ELEV_MAX[vt]))
+	var alt := 0.0
+	var bank := 0.0
+	if vi.plane:
+		# planes: "turret" carries the altitude, bits 20-27 the bank angle
+		alt = 0.0 if wreck else turret
+		var bb := (fl >> 20) & 255
+		bank = 0.0 if bb == 0 or wreck else float(bb) / 127.5 - 1.0
+		turret = hull
+	else:
+		pitch = clampf(pitch, float(ELEV_MIN[vt]), float(ELEV_MAX[vt]))
 	var rel := 0.0 if wreck else angle_difference(hull, turret)
 	var firing := (fl & 1) != 0 and not wreck
 	if firing and not vi.firing:
@@ -541,6 +579,8 @@ func push(id: int, wreck: bool, vtype: int, pos: Vector2, hull: float, turret: f
 		vi.hull = hull
 		vi.tur = rel
 		vi.pitch = pitch
+		vi.alt = alt
+		vi.bank = bank
 	else:
 		# snapshots arrive at 60 Hz: ease towards them so faster displays do not see steps
 		var k := 1.0 - exp(-_dt * 35.0)
@@ -548,6 +588,8 @@ func push(id: int, wreck: bool, vtype: int, pos: Vector2, hull: float, turret: f
 		vi.hull = lerp_angle(vi.hull, hull, k)
 		vi.tur = lerp_angle(vi.tur, rel, k)
 		vi.pitch = lerpf(vi.pitch, pitch, k)
+		vi.alt = lerpf(vi.alt, alt, k)
+		vi.bank = lerpf(vi.bank, bank, k)
 	_count += 1
 
 
@@ -593,6 +635,9 @@ func finish(sz: Vector2i, cpos: Vector2, yaw: float, plen: float, bob: float, lo
 
 
 func _pose(vi: VInst, dt: float) -> void:
+	if vi.plane:
+		_pose_plane(vi)
+		return
 	vi.root.transform = Transform3D(Basis(Vector3.UP, -vi.hull), Vector3(vi.pos.x, 0.0, vi.pos.y))
 	if vi.moving:
 		var ph := _time + vi.phase

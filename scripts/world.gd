@@ -16,6 +16,7 @@ const TANK_R := 0.6
 const TANK_HP := 500.0
 const GATE_HP := 300.0
 const TANK_RESPAWN := 25.0
+const WAR_RESPAWN := 60.0     # WAR: vehicles and planes come back, but much slower
 const PLAYER_RESPAWN := 7.0
 const WEAPON_DROP_LIFE := PLAYER_RESPAWN * 1.5   # dropped guns stay this long
 const ARMOR_RESPAWN := 40.0
@@ -52,7 +53,8 @@ const I_AIMY := 22
 const INPUT_SIZE := 23
 const JUMP_V := 3.0
 # gun traverse relative to the hull (min, max); the moto sidecar MG and the jeep's rear MG can't swing through the crew
-const TRAVERSE := [Vector2(-PI, PI), Vector2(-PI, PI), Vector2(-0.45, 1.7), Vector2(-2.6, 2.6), Vector2(-PI, PI)]
+const TRAVERSE := [Vector2(-PI, PI), Vector2(-PI, PI), Vector2(-0.45, 1.7), Vector2(-2.6, 2.6), Vector2(-PI, PI),
+	Vector2(-PI, PI), Vector2(-PI, PI), Vector2(-PI, PI)]
 const MAX_PITCH := 0.95
 const FALL_SAFE := 2.3
 
@@ -179,6 +181,14 @@ class Tank:
 	var spawn := Vector3.ZERO
 	var moving := false
 	var fire_t := 0.0
+	# planes only
+	var z := 0.0          # altitude
+	var speed := 0.0      # forward speed
+	var ppitch := 0.0     # nose pitch (rad, + = climbing)
+	var pcmd := 0.0       # pilot's pitch command (mouse Y)
+	var bank := 0.0
+	var bombs := 0
+	var bomb_cd := 0.0
 
 
 class Enemy:
@@ -219,6 +229,8 @@ class Shell:
 	var splash := 1.8
 	var z := 0.6
 	var slope := 0.0
+	var vz := 0.0        # bombs: vertical speed (with grav > 0 the slope follows it)
+	var grav := 0.0
 
 
 class Bullet:
@@ -358,17 +370,19 @@ func _init(p_map, roster: Array, seed_val: int, p_difficulty := 1, p_time := 900
 					if found:
 						break
 			tk.spawn = Vector3(sp.x, sp.y, s.z)
-			tk.vtype = rng.randi() % Defs.VEHICLES.size()
+			tk.vtype = rng.randi() % Defs.GROUND_VEHICLES
 			var idx := 0
 			for r in roster:
 				if int(r.team) != ti:
 					continue
 				if idx / 2 == k and r.has("vehicle"):
-					tk.vtype = clampi(int(r.vehicle), 0, Defs.VEHICLES.size() - 1)
+					tk.vtype = clampi(int(r.vehicle), 0, Defs.GROUND_VEHICLES - 1)
 					break
 				idx += 1
 			_reset_tank(tk)
 			tanks.append(tk)
+		if mode == Defs.MODE_WAR:
+			_park_planes(ti, maxi(2, int(members[ti]) / 4), nveh)
 		teams[ti] = {"score": 0}
 		team_pass[ti] = {}
 		team_astar[ti] = astar
@@ -426,7 +440,7 @@ func _init(p_map, roster: Array, seed_val: int, p_difficulty := 1, p_time := 900
 		_msg("TEAM DEATHMATCH: every enemy kill scores (vehicles count double). First to %d kills wins!" % score_limit)
 	elif mode == Defs.MODE_WAR:
 		_place_points()
-		_msg("WAR: capture and hold points A, B and C. Every held point scores. Destroyed vehicles are gone for good!")
+		_msg("WAR: capture and hold points A, B and C. Every held point scores. Lost vehicles take a whole minute to come back!")
 	else:
 		_msg("Each team owns a bunker. Kill enemies for their KEYS - their keys open THEIR bunker. Defend yours!")
 
@@ -513,6 +527,11 @@ func snapshot() -> Dictionary:
 		if t.moving: fl |= 2
 		fl |= t.vtype << 8
 		fl |= clampi(int(round((t.gun_pitch + 1.0) * 127.5)), 0, 255) << 12
+		if _is_plane(t):
+			# planes: aux = altitude, bits 20-27 = bank
+			fl |= clampi(int(round((clampf(t.bank, -1.0, 1.0) + 1.0) * 127.5)), 0, 255) << 20
+			_pack(Defs.E_TANK if t.alive else Defs.E_WRECK, t.pos, t.hull, t.team, fl, t.hp / float(_vs(t).hp), t.z, t.id)
+			continue
 		_pack(Defs.E_TANK if t.alive else Defs.E_WRECK, t.pos, t.hull, t.team, fl, t.hp / float(_vs(t).hp), t.turret, t.id)
 	for p in players.values():
 		if p.alive and p.tank == null:
@@ -573,6 +592,11 @@ func snapshot() -> Dictionary:
 			teid = t.id
 			thp = t.hp / float(_vs(t).hp)
 			ccd = clampf(t.cannon_cd / maxf(0.1, float(_vs(t).main_cd)), 0.0, 1.0)
+		if p.bot != null:
+			# bots only need what OTHER players' screens use (name tags, scoreboard, fog of war): keeps 16 v 16 light
+			pl.append({"id": p.id, "tm": p.team, "role": role, "x": vpos.x, "y": vpos.y, "yaw": vyaw, "hp": p.hp,
+				"name": p.name, "kills": p.kills, "bot": true, "z": p.z, "tank": teid, "rsp": p.respawn, "cr": p.crouch})
+			continue
 		var pz = null
 		if p.puzzle >= 0:
 			pz = bstate[p.pz_bunker].pz[p.puzzle].duplicate(true)
@@ -592,6 +616,9 @@ func snapshot() -> Dictionary:
 		(pl.back() as Dictionary)["mortar"] = _mortar_user(p)
 		(pl.back() as Dictionary)["hid"] = p.heal_id
 		(pl.back() as Dictionary)["ar"] = p.armor
+		if p.tank != null and _is_plane(p.tank):
+			var pt = p.tank
+			(pl.back() as Dictionary)["pl"] = [pt.z, pt.speed, pt.ppitch, pt.bombs, float(_vs(pt).speed), float(_vs(pt).takeoff)]
 		(pl.back() as Dictionary)["hw"] = p.hw if p.alive and p.tank == null else -1
 	var dyn := PackedInt32Array()
 	for g in gates:
@@ -660,6 +687,20 @@ func _team_tank(team: int):
 
 ## The vehicle this player crews (players 0-1 of a team share vehicle 0, players 2-3 vehicle 1).
 func _slot_tank(p):
+	if mode == Defs.MODE_WAR and p.bot != null:
+		# the last 4 bots of each team are aircrews: two planes, pilot + bomber each
+		var n := 0
+		for q in players.values():
+			if q.team == p.team:
+				n += 1
+		if p.slot >= n - 4:
+			var mine: Array = []
+			for t in tanks:
+				if t.team == p.team and _is_plane(t):
+					mine.append(t)
+			var idx: int = (p.slot - (n - 4)) / 2
+			if idx < mine.size() and mine[idx].alive:
+				return mine[idx]
 	var best = null
 	for t in tanks:
 		if t.team == p.team:
@@ -725,14 +766,14 @@ func _smoke_blocks(a: Vector2, b: Vector2) -> bool:
 
 ## Vertical extent of things: feet height and body height.
 func _base_z(t) -> float:
-	return t.z if t.ttype == 1 else 0.0
+	return t.z if t.ttype == 1 or t.ttype == 2 else 0.0
 
 
 func _tall(t) -> float:
 	if t.ttype == 1:
 		return 0.55 if t.crouch else 0.95
 	if t.ttype == 2:
-		return [1.1, 1.0, 0.85, 0.95, 1.1][t.vtype]
+		return [1.1, 1.0, 0.85, 0.95, 1.1, 0.75, 0.9, 0.8][t.vtype]
 	return 0.95 if t.kind == Defs.E_SOLDIER else 0.85
 
 
@@ -883,9 +924,11 @@ func _respawn(p) -> void:
 	# every team member gets their own spot on a ring around the camp (no stacking on one point),
 	# on the side away from the map edge; skip spots that are blocked or already taken
 	var placed := false
-	for ring in [2.6, 3.6, 1.8]:
-		for k in 8:
-			var a: float = s.z + (float((p.slot + k) % 8) - 3.5) * 0.42
+	# 3 rings of 8 around the camp; WAR (16 per team) adds 2 more rings of 12
+	for ring in [2.6, 3.6, 1.8, 4.8, 6.0]:
+		var nk: int = 8 if float(ring) < 4.0 else 12
+		for k in nk:
+			var a: float = s.z + (float((p.slot + k) % nk) - (float(nk) - 1.0) * 0.5) * (0.42 if nk == 8 else 0.3)
 			var c: Vector2 = base + Vector2.from_angle(a) * float(ring)
 			if map.circle_blocked(c, PLAYER_R, {}, 0.0):
 				continue
@@ -2069,11 +2112,19 @@ func _reset_tank(t) -> void:
 	t.mg_cd = 0.0
 	t.drive = 0.0
 	t.steer = 0.0
+	t.z = 0.0
+	t.speed = 0.0
+	t.ppitch = 0.0
+	t.pcmd = 0.0
+	t.bank = 0.0
+	t.bombs = int(_vs(t).get("bombs", 0))
 
 
 func _enter_tank(p, t) -> bool:
 	if _flag_of(p) >= 0:
 		return false   # flag carriers stay on foot
+	if _is_plane(t) and t.z > 0.3:
+		return false   # can't board a flying plane
 	if t.driver == null:
 		t.driver = p
 		p.seat = 0
@@ -2115,6 +2166,13 @@ func _exit_tank(p) -> void:
 		t.gunner = null
 	p.tank = null
 	p.seat = -1
+	if _is_plane(t) and t.z > 1.0 and p.alive:
+		# no parachutes
+		p.pos = t.pos
+		_msg("%s jumped out of a flying plane" % p.name)
+		_kill_player(p, null)
+		_resync_tank(t)
+		return
 	var fwd := Vector2.from_angle(t.hull)
 	var side := Vector2(-fwd.y, fwd.x)
 	var base: Vector2 = t.pos
@@ -2147,6 +2205,7 @@ func _player_in_tank(p, inp: Array, use_pressed: bool, seat_pressed: bool, epoch
 	_regen_stamina(p, 1.0 / 60.0)
 	if over:
 		return
+	p.hint = 0
 	if use_pressed:
 		_exit_tank(p)
 		return
@@ -2154,6 +2213,9 @@ func _player_in_tank(p, inp: Array, use_pressed: bool, seat_pressed: bool, epoch
 		_switch_seat(p)
 		return
 	var role := _role(p)
+	if _is_plane(t):
+		_player_in_plane(p, t, role, inp, epoch_ok)
+		return
 	p.pitch = clampf(float(inp[I_PITCH]), -0.45, 0.6)
 	if role == Defs.ROLE_SOLO or role == Defs.ROLE_GUNNER:
 		t.gun_pitch = p.pitch
@@ -2176,9 +2238,7 @@ func _player_in_tank(p, inp: Array, use_pressed: bool, seat_pressed: bool, epoch
 		if bool(inp[I_ALT]) and float(vs.mg_cd) > 0.0:
 			_tank_mg(t, p, t.turret)
 	else:
-		p.yaw = t.hull
-		if bool(inp[I_FIRE]) and bool(_vs(t).driver_mg):
-			_tank_mg(t, p, t.hull)
+		p.yaw = t.hull   # the driver only drives (no hull MG: driver OR shooter, never both)
 
 
 func _vs(t) -> Dictionary:
@@ -2188,8 +2248,6 @@ func _vs(t) -> Dictionary:
 func _update_tank(t, dt: float) -> void:
 	var vs := _vs(t)
 	if not t.alive:
-		if mode == Defs.MODE_WAR:
-			return   # no reinforcements in a war: wrecks stay wrecks
 		t.respawn -= dt
 		if t.respawn <= 0.0:
 			_reset_tank(t)
@@ -2201,13 +2259,16 @@ func _update_tank(t, dt: float) -> void:
 	if (t.driver == null and t.gunner == null) or over:
 		t.drive = 0.0
 		t.steer = 0.0
+	if _is_plane(t):
+		_update_plane(t, dt)
+		return
 	var r: float = vs.r
 	t.hull = wrapf(t.hull + t.steer * float(vs.turn) * dt, -PI, PI)
 	var spd: float = float(vs.speed) if t.drive > 0.0 else float(vs.rev)
 	var delta: Vector2 = Vector2.from_angle(t.hull) * t.drive * spd * dt
 	var np: Vector2 = map.move_circle(t.pos, delta, r)
 	for o in tanks:
-		if o != t and np.distance_to(o.pos) < r + _radius(o) and np.distance_to(o.pos) < t.pos.distance_to(o.pos):
+		if o != t and o.z < 1.0 and np.distance_to(o.pos) < r + _radius(o) and np.distance_to(o.pos) < t.pos.distance_to(o.pos):
 			np = t.pos
 	t.moving = np.distance_squared_to(t.pos) > 0.000001
 	t.pos = np
@@ -2220,6 +2281,206 @@ func _update_tank(t, dt: float) -> void:
 	for o in [t.driver, t.gunner]:
 		if o != null:
 			o.pos = t.pos
+
+
+# ---------------------------------------------------------------- planes (WAR)
+
+const PLANE_CEIL := 14.0
+const BOMB_GRAV := 6.0
+
+
+func _is_plane(t) -> bool:
+	return t.vtype >= Defs.PLANE_FIRST
+
+
+## Planes line up beside the camp, noses towards the map centre, on the most open ground nearby.
+func _park_planes(ti: int, n: int, first_slot: int) -> void:
+	var s: Vector3 = map.team_spawns[ti]
+	var base := Vector2(s.x, s.y)
+	var to_c := (Vector2(map.W * 0.5, map.H * 0.5) - base).normalized()
+	var side := Vector2(-to_c.y, to_c.x)
+	for k in n:
+		var tk := Tank.new()
+		tk.id = 5000 + ti + k * 100
+		tk.team = ti
+		tk.slot = first_slot + k
+		tk.vtype = Defs.PLANE_FIRST + k % 3
+		var want: Vector2 = base + to_c * 9.0 + side * (float(k) - float(n - 1) * 0.5) * 3.2
+		var sp := _open_spot(want)
+		tk.spawn = Vector3(sp.x, sp.y, to_c.angle())
+		_reset_tank(tk)
+		tanks.append(tk)
+
+
+func _player_in_plane(p, t, role: int, inp: Array, epoch_ok: bool) -> void:
+	if role == Defs.ROLE_DRIVER:
+		# pilot: W/S throttle, A/D turn, mouse up/down = climb/dive. Flies only.
+		t.drive = clampf(float(inp[I_MY]), -1.0, 1.0)
+		t.steer = clampf(float(inp[I_MX]), -1.0, 1.0)
+		t.pcmd = clampf(float(inp[I_PITCH]), -0.7, 0.7)
+		p.pitch = t.pcmd
+		p.yaw = t.hull
+	else:
+		# bomber: free look (mostly down), FIRE releases a bomb
+		p.pitch = clampf(float(inp[I_PITCH]), -1.3, 0.3)
+		if epoch_ok:
+			p.yaw = float(inp[I_YAW])
+		if bool(inp[I_FIRE]) and t.bombs > 0 and t.bomb_cd <= 0.0 and t.z > 0.5:
+			_drop_bomb(t, p)
+
+
+## AI aircrew. Pilot: wait for the bomber, take off, fly at ~8 towards the points the team doesn't hold and circle
+## them. Bomber: release when the predicted impact is near an enemy-held point or enemy troops.
+func _bot_plane(p, b, t, role: int, dt: float, o: Dictionary) -> void:
+	var vs := _vs(t)
+	if role == Defs.ROLE_DRIVER:
+		if t.z <= 0.0 and t.gunner == null and b.taxi_stuck < 12.0:
+			b.taxi_stuck += dt   # wait a bit for the bomber to climb in
+			o.my = 0.0
+			o.pitch = 0.0
+			return
+		var goal := Vector2(map.W * 0.5, map.H * 0.5)
+		var bd := 1e9
+		for cp in cpoints:
+			if int(cp.owner) != p.team:
+				var d: float = t.pos.distance_to(cp.pos)
+				if d < bd:
+					bd = d
+					goal = cp.pos
+		var desired: float = (goal - t.pos).angle()
+		var steer: float = clampf(angle_difference(t.hull, desired) * 2.0, -1.0, 1.0)
+		if t.pos.distance_to(goal) < 7.0:
+			steer = 0.8   # circle over the target
+		o.my = 1.0
+		if t.z <= 0.0:
+			# take-off run: straight ahead, pull up once fast enough
+			o.mx = 0.0
+			o.pitch = 0.5 if t.speed >= float(vs.takeoff) else 0.0
+			if t.speed < 0.3:
+				b.seat_t += dt
+				if b.seat_t > 3.0:
+					o.mx = 1.0   # stuck against something: turn away
+		else:
+			b.seat_t = 0.0
+			o.mx = steer
+			o.pitch = clampf((8.0 - t.z) * 0.15, -0.35, 0.5)
+		return
+	# bomber
+	o.pitch = -1.0
+	if t.z < 2.0 or t.bombs <= 0 or t.bomb_cd > 0.0:
+		return
+	var vh: float = t.speed * cos(t.ppitch)
+	var vz0: float = t.speed * sin(t.ppitch)
+	var z0: float = t.z - 0.35
+	var tt: float = (vz0 + sqrt(maxf(0.0, vz0 * vz0 + 2.0 * BOMB_GRAV * z0))) / BOMB_GRAV
+	var hit: Vector2 = t.pos + Vector2.from_angle(t.hull) * vh * tt
+	var good := false
+	for cp in cpoints:
+		if int(cp.owner) != p.team and hit.distance_to(cp.pos) < 3.5:
+			good = true
+	if not good:
+		for q in _hostiles(p.team):
+			if q.ttype != 0 and q.pos.distance_to(hit) < 2.5 and _base_z(q) < 1.0:
+				good = true
+				break
+	if good:
+		o.fire = true
+
+
+func _drop_bomb(t, p) -> void:
+	var vs := _vs(t)
+	t.bombs -= 1
+	t.bomb_cd = 0.4
+	var d := Vector2.from_angle(t.hull)
+	var s := Shell.new()
+	s.pos = t.pos - d * 0.2
+	s.vel = d * t.speed * cos(t.ppitch)
+	s.vz = sin(t.ppitch) * t.speed
+	s.grav = BOMB_GRAV
+	s.team = t.team
+	s.owner = p
+	s.dmg = float(vs.bomb_dmg)
+	s.splash = float(vs.bomb_splash)
+	s.life = 12.0
+	s.z = t.z - 0.35
+	shells.append(s)
+	_ev(Defs.EV_CANNON, t.pos, Vector2(t.vtype, 0))
+	p.shots += 1
+
+
+func _update_plane(t, dt: float) -> void:
+	var vs := _vs(t)
+	t.bomb_cd -= dt
+	var vmax: float = vs.speed
+	var vto: float = vs.takeoff
+	var acc: float = vs.accel
+	t.speed = clampf(t.speed + t.drive * acc * dt - (0.15 * dt if t.drive <= 0.0 else 0.0), 0.0, vmax)
+	var r: float = vs.r
+	if t.z <= 0.0:
+		# rolling on the ground: taxi, take off when fast enough and the pilot pulls up
+		t.z = 0.0
+		t.bank = move_toward(t.bank, 0.0, dt * 2.0)
+		t.hull = wrapf(t.hull + t.steer * 1.2 * clampf(t.speed / vto, 0.15, 1.0) * dt, -PI, PI)
+		var d: Vector2 = Vector2.from_angle(t.hull) * t.speed * dt
+		var np: Vector2 = map.move_circle(t.pos, d, r * 0.5)
+		if d.length() > 0.0001 and np.distance_squared_to(t.pos) < d.length_squared() * 0.25:
+			if t.speed > vto * 0.6:
+				_crash(t)
+				return
+			t.speed = 0.0
+		t.pos = np
+		t.ppitch = move_toward(t.ppitch, 0.0, dt)
+		if t.speed >= vto and t.pcmd > 0.08:
+			t.z = 0.05
+			t.ppitch = 0.15
+	else:
+		# flying
+		var stall: bool = t.speed < vto * 0.8
+		var want_p: float = -0.5 if stall else t.pcmd * 0.9
+		t.ppitch = move_toward(t.ppitch, want_p, dt * (0.6 if stall else 1.1))
+		t.bank = lerpf(t.bank, t.steer * 0.65, minf(1.0, dt * 3.0))
+		t.hull = wrapf(t.hull + t.steer * float(vs.turn) * dt, -PI, PI)
+		# diving speeds you up, climbing slows you down
+		t.speed = clampf(t.speed - sin(t.ppitch) * 2.0 * dt, 0.0, vmax * 1.25)
+		t.z += sin(t.ppitch) * t.speed * dt
+		if t.z > PLANE_CEIL:
+			t.z = PLANE_CEIL
+			t.ppitch = minf(t.ppitch, 0.0)
+		var np2: Vector2 = t.pos + Vector2.from_angle(t.hull) * cos(t.ppitch) * t.speed * dt
+		# keep inside the map: the plane banks back towards the centre near the edges
+		var m := 6.0
+		if np2.x < m or np2.y < m or np2.x > map.W - m or np2.y > map.H - m:
+			var to_c := (Vector2(map.W * 0.5, map.H * 0.5) - np2).angle()
+			t.hull = rotate_toward(t.hull, to_c, float(vs.turn) * 1.6 * dt)
+			np2 = Vector2(clampf(np2.x, 2.0, map.W - 2.0), clampf(np2.y, 2.0, map.H - 2.0))
+		t.pos = np2
+		if t.z > 0.05 and map.circle_blocked(t.pos, 0.35, {}, t.z):
+			_crash(t)   # flew into a building / hill
+			return
+		if t.z <= 0.0:
+			# touchdown: slow and level enough = landing, otherwise a crash
+			if t.speed < vto * 1.35 and t.ppitch > -0.3:
+				t.z = 0.0
+				t.ppitch = 0.0
+			else:
+				_crash(t)
+				return
+	t.moving = t.speed > 0.1
+	t.gun_pitch = t.ppitch
+	for o in [t.driver, t.gunner]:
+		if o != null:
+			o.pos = t.pos
+			o.z = t.z
+
+
+func _crash(t) -> void:
+	var crew: Array = [t.driver, t.gunner]
+	_explode(t.pos, -1, null, 2.4, 120.0, 120.0, 0.3)
+	_destroy_tank(t, null)
+	for o in crew:
+		if o != null and o.alive:
+			_kill_player(o, null)
+	_msg("%s %s CRASHED" % [Defs.TEAM_NAMES[t.team], _vs(t).name])
 
 
 func _tank_cannon(t, p) -> void:
@@ -2260,7 +2521,7 @@ func _tank_mg(t, p, ang: float) -> void:
 
 func _destroy_tank(t, killer) -> void:
 	t.alive = false
-	t.respawn = TANK_RESPAWN
+	t.respawn = WAR_RESPAWN if mode == Defs.MODE_WAR else TANK_RESPAWN
 	_ev(Defs.EV_EXPLOSION, t.pos)
 	_msg("%s %s DESTROYED" % [Defs.TEAM_NAMES[t.team], _vs(t).name])
 	if mode == Defs.MODE_TDM and killer != null and killer.ttype == 1 and killer.team != t.team and teams.has(killer.team) and (t.driver != null or t.gunner != null):
@@ -2269,6 +2530,9 @@ func _destroy_tank(t, killer) -> void:
 		if o != null:
 			_exit_tank(o)
 			_damage(o, 35.0, killer, true)
+	if _is_plane(t):
+		t.z = 0.0   # the wreck falls to the ground
+		t.speed = 0.0
 
 
 func _update_shells(dt: float) -> void:
@@ -2276,6 +2540,9 @@ func _update_shells(dt: float) -> void:
 	for s in shells:
 		var exploded := false
 		for i in 4:
+			if s.grav > 0.0:
+				s.vz -= s.grav * dt / 4.0
+				s.slope = s.vz / maxf(0.01, s.vel.length())
 			var stp: Vector2 = s.vel * (dt / 4.0)
 			var L := stp.length()
 			var wr: Dictionary = map.ray3(s.pos, s.z, stp / maxf(L, 1e-6), s.slope, L)
@@ -3686,7 +3953,9 @@ func _bot_think(p, dt: float) -> Array:
 			_bot_foot(p, b, dt, o)
 	# aim up/down at the target's chest (with the bot's aiming error)
 	var pitch := 0.0
-	if b.target != null and p.alive:
+	if o.has("pitch"):
+		pitch = float(o.pitch)   # plane crews steer their own pitch
+	elif b.target != null and p.alive:
 		var d := maxf(0.5, p.pos.distance_to(b.target.pos))
 		pitch = atan2(_chest_z(b.target) - (_eye_z(p) - 0.04), d) + b.err * 0.4
 	return [o.mx, o.my, o.yaw, o.fire, o.alt, o.hold, b.use_c, b.seat_c, b.wreq, b.wseq, 0, p.epoch,
@@ -3696,6 +3965,9 @@ func _bot_think(p, dt: float) -> Array:
 func _bot_tank(p, b, dt: float, o: Dictionary) -> void:
 	var t = p.tank
 	var role := _role(p)
+	if _is_plane(t):
+		_bot_plane(p, b, t, role, dt, o)
+		return
 	if mode != Defs.MODE_HEIST and b.travel == Vector2.INF and not _human_in(t):
 		# CTF / TDM: vehicles are taxis to wherever the bot wants to fight
 		var mg: Dictionary = _bot_mode_goal(p)
@@ -3929,7 +4201,7 @@ func _bot_foot(p, b, dt: float, o: Dictionary) -> void:
 	if t != null and (not t.alive or (t.driver != null and t.gunner != null and t.driver != p and t.gunner != p)):
 		# own vehicle wrecked or full: use the team's other one
 		for o2 in tanks:
-			if o2.team == p.team and o2.alive and (o2.driver == null or o2.gunner == null):
+			if o2.team == p.team and o2.alive and not _is_plane(o2) and (o2.driver == null or o2.gunner == null):
 				t = o2
 	var tb: int = team_target.get(p.team, 0)
 	var held := _stolen_key(p)

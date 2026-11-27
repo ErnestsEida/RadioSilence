@@ -146,7 +146,7 @@ func _render() -> Image:
 	var paint: Material = VM.paint_material()
 	var insts: Array[MeshInstance3D] = []
 	var t_build := Time.get_ticks_msec()
-	for v in VM.NUM_TYPES:
+	for v in 5:   # ground vehicles only (planes always use the real 3D layer)
 		for k in PARTS_PER_TYPE:
 			var part := "hull" if k % 2 == 0 else "turret"
 			var wreck := k >= 2
