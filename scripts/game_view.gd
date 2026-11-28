@@ -1279,7 +1279,7 @@ func _draw_plane_hud(s: Vector2, role: int) -> void:
 		hud.draw_line(Vector2(sb.position.x, sb.get_center().y), Vector2(sb.end.x, sb.get_center().y), Color(g.r, g.g, g.b, 0.25), 1.0)
 		hud.draw_circle(sb.get_center() + st * 41.0, 5.0, g)
 		var ctl := "W/S throttle   mouse: steer + climb/dive" if lp.device == "kbm" else "throttle / steer: stick   climb/dive: aim"
-		_txt(Vector2(0, s.y - 80), "%s   [%s] switch to bombsight" % [ctl, _key("seat")], fs - 7, Color(0.85, 0.85, 0.8, 0.8), HORIZONTAL_ALIGNMENT_CENTER, s.x)
+		_txt(Vector2(0, s.y - 80), "%s   [%s] get out" % [ctl, _key("use")], fs - 7, Color(0.85, 0.85, 0.8, 0.8), HORIZONTAL_ALIGNMENT_CENTER, s.x)
 	else:
 		# bombsight: where a bomb released now would land
 		if flying:
@@ -1300,7 +1300,7 @@ func _draw_plane_hud(s: Vector2, role: int) -> void:
 				_txt(Vector2(0, c.y), "look down to see the impact point", fs - 4, Color(1, 0.8, 0.6), HORIZONTAL_ALIGNMENT_CENTER, s.x)
 		else:
 			_txt(Vector2(0, c.y + 60), "Bombs can only be dropped in the air", fs - 4, Color(1, 1, 0.7), HORIZONTAL_ALIGNMENT_CENTER, s.x)
-		_txt(Vector2(0, s.y - 80), "[fire] drop bomb   mouse: look   [%s] switch to pilot seat" % _key("seat"), fs - 7, Color(0.85, 0.85, 0.8, 0.8), HORIZONTAL_ALIGNMENT_CENTER, s.x)
+		_txt(Vector2(0, s.y - 80), "[fire] drop bomb   mouse: look   [%s] get out" % _key("use"), fs - 7, Color(0.85, 0.85, 0.8, 0.8), HORIZONTAL_ALIGNMENT_CENTER, s.x)
 	_txt(Vector2(0, s.y - 110), "BOMBS %d   ALT %d m" % [bombs, int(alt * 30.0)], fs - 2, Color(1, 0.85, 0.5), HORIZONTAL_ALIGNMENT_CENTER, s.x)
 
 
@@ -1625,14 +1625,14 @@ func _draw_hud() -> void:
 		_txt(Vector2(0, s.y - pad - 6 - line), gear, fs - 4, Color(0.85, 0.85, 0.85, 0.85), HORIZONTAL_ALIGNMENT_RIGHT, s.x - pad)
 	elif role == Defs.ROLE_GUNNER and my_vtype >= Defs.PLANE_FIRST:
 		wtxt = "%s  BOMBER" % Defs.VEHICLES[my_vtype].name
-		_txt(Vector2(0, s.y - pad - 6 - line), "[%s] exit   [%s] switch seat" % [_key("use"), _key("seat")], fs - 4, Color(0.85, 0.85, 0.8, 0.8), HORIZONTAL_ALIGNMENT_RIGHT, s.x - pad)
+		_txt(Vector2(0, s.y - pad - 6 - line), "[%s] get out" % _key("use"), fs - 4, Color(0.85, 0.85, 0.8, 0.8), HORIZONTAL_ALIGNMENT_RIGHT, s.x - pad)
 	elif role == Defs.ROLE_SOLO or role == Defs.ROLE_GUNNER:
 		var vsd: Dictionary = Defs.VEHICLES[my_vtype]
 		wtxt = ("%s  %s [fire]%s" % [vsd.name, str(vsd.main).to_upper(), "   MG [alt fire]" if float(vsd.mg_cd) > 0.0 else ""]) if str(vsd.main) != "none" else "%s  MG [fire]" % vsd.name
-		_txt(Vector2(0, s.y - pad - 6 - line), "[%s] exit vehicle   [%s] switch seat" % [_key("use"), _key("seat")], fs - 4, Color(0.85, 0.85, 0.85, 0.8), HORIZONTAL_ALIGNMENT_RIGHT, s.x - pad)
+		_txt(Vector2(0, s.y - pad - 6 - line), "[%s] exit vehicle" % _key("use"), fs - 4, Color(0.85, 0.85, 0.85, 0.8), HORIZONTAL_ALIGNMENT_RIGHT, s.x - pad)
 	elif role == Defs.ROLE_DRIVER:
 		wtxt = "%s  %s" % [Defs.VEHICLES[my_vtype].name, "PILOT" if my_vtype >= Defs.PLANE_FIRST else "DRIVING"]
-		_txt(Vector2(0, s.y - pad - 6 - line), "[%s] exit vehicle   [%s] switch seat" % [_key("use"), _key("seat")], fs - 4, Color(0.85, 0.85, 0.85, 0.8), HORIZONTAL_ALIGNMENT_RIGHT, s.x - pad)
+		_txt(Vector2(0, s.y - pad - 6 - line), "[%s] exit vehicle" % _key("use"), fs - 4, Color(0.85, 0.85, 0.85, 0.8), HORIZONTAL_ALIGNMENT_RIGHT, s.x - pad)
 	if wtxt != "":
 		_txt(Vector2(0, s.y - pad - 6), wtxt, fs + 2, Color(1, 0.9, 0.6), HORIZONTAL_ALIGNMENT_RIGHT, s.x - pad)
 		var wicon: Texture2D = WeaponIcons.weapon(int(me.w)) if role == Defs.ROLE_FOOT else null
@@ -1659,7 +1659,7 @@ func _draw_hud() -> void:
 	else:
 		var hint: int = me.hint
 		var hints := {
-			Defs.H_ENTER: "[%s] Enter tank" % _key("use"),
+			Defs.H_ENTER: "[%s] Drive   [%s] Man the gun" % [_key("use"), _key("seat")],
 			Defs.H_KEYDOOR: "Locked - you need one of THIS bunker's keys (kill its owners and take theirs)",
 			Defs.H_UNLOCK: "[%s] Unlock with a key" % _key("use"),
 			Defs.H_TERMINAL: "[%s] Work the puzzle terminal - your teammate should cover you!" % _key("use"),

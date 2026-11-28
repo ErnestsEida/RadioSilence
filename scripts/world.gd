@@ -100,6 +100,9 @@ class Player:
 	var hint := 0
 	var hurt := 0.0
 	var shots := 0
+	var seat_edge := false   # [seat] pressed this frame (on foot: board a vehicle as gunner)
+	var spawn_t := -99.0
+	var spawn_shots := 0
 	var kills := 0
 	var moving := false
 	var fire_t := 0.0
@@ -151,6 +154,13 @@ class Bot:
 	var use_cd := 0.0
 	var strafe := 1.0
 	var strafe_t := 0.0
+	var pause_t := 0.0     # plants its feet for a moment to aim
+	var retreat_t := 0.0   # hurt: falls back for a moment
+	var flank := 1.0       # approach from this side of the enemy (re-rolled now and then)
+	var flank_t := 0.0
+	var tvel := Vector2.ZERO   # target velocity estimate (for leading shots)
+	var tlast := Vector2.ZERO
+	var tlast_id := -1
 	var tick := 0
 	var pz_t := 0.0
 	var pz_release := false
@@ -693,7 +703,7 @@ func _slot_tank(p):
 		for q in players.values():
 			if q.team == p.team:
 				n += 1
-		if p.slot >= n - 4:
+		if n >= 8 and p.slot >= n - 4:
 			var mine: Array = []
 			for t in tanks:
 				if t.team == p.team and _is_plane(t):
@@ -785,6 +795,14 @@ func _eye_z(t) -> float:
 
 func _chest_z(t) -> float:
 	return _base_z(t) + _tall(t) * 0.55
+
+
+## Where bots aim vertically: low enough on soldiers that standing AND crouching bodies get hit
+## (crouch-spamming no longer makes them miss), centre mass on everything else.
+func _aim_z(t) -> float:
+	if t.ttype == 1 and t.tank == null:
+		return _base_z(t) + 0.4
+	return _chest_z(t)
 
 
 func _head_z(t) -> float:
@@ -947,6 +965,8 @@ func _respawn(p) -> void:
 			break
 	p.alive = true
 	p.hp = 100.0
+	p.spawn_t = elapsed
+	p.spawn_shots = p.shots
 	p.primary = int(p.want[0]) if Defs.PRIMARIES.has(int(p.want[0])) else Defs.W_RIFLE
 	p.secondary = int(p.want[1]) if Defs.SECONDARIES.has(int(p.want[1])) else Defs.W_PISTOL
 	p.equip = clampi(int(p.want[2]), 0, 3)
@@ -993,12 +1013,24 @@ func _update_player(p, dt: float) -> void:
 	if p.inp.size() < INPUT_SIZE:
 		return
 	var inp: Array = p.inp
-	p.want = [int(inp[I_PRI]), int(inp[I_SEC]), int(inp[I_EQ])]
+	var nw: Array = [int(inp[I_PRI]), int(inp[I_SEC]), int(inp[I_EQ])]
+	if nw != p.want and p.tank == null and elapsed - p.spawn_t < 6.0 and p.shots == p.spawn_shots:
+		# still at the spawn and hasn't fired: a new loadout applies right away (fixes the first spawn of a
+		# match ignoring the picked loadout, and lets you fix your kit right after respawning)
+		p.want = nw
+		p.primary = int(nw[0]) if Defs.PRIMARIES.has(int(nw[0])) else p.primary
+		p.secondary = int(nw[1]) if Defs.SECONDARIES.has(int(nw[1])) else p.secondary
+		p.equip = clampi(int(nw[2]), 0, 3)
+		_refill(p)
+		p.weapon = p.primary
+		p.reload = 0.0
+	p.want = nw
 	var epoch_ok: bool = int(inp[I_EPOCH]) == p.epoch
 	var use_pressed: bool = int(inp[I_USEC]) != p.use_count
 	p.use_count = int(inp[I_USEC])
 	var seat_pressed: bool = int(inp[I_SEATC]) != p.seat_count
 	p.seat_count = int(inp[I_SEATC])
+	p.seat_edge = seat_pressed
 	var reload_pressed: bool = int(inp[I_RELC]) != p.reload_count
 	p.reload_count = int(inp[I_RELC])
 	var jump_pressed: bool = int(inp[I_JUMPC]) != p.jump_count
@@ -1687,7 +1719,10 @@ func _interact(p, pressed: bool) -> void:
 				continue
 			p.hint = Defs.H_ENTER
 			if pressed:
-				_enter_tank(p, t)
+				_enter_tank(p, t, 0)
+				return
+			if p.seat_edge:
+				_enter_tank(p, t, 1)
 				return
 	if p.carried > 0:
 		var s: Vector3 = map.team_spawns[p.team]
@@ -2120,12 +2155,16 @@ func _reset_tank(t) -> void:
 	t.bombs = int(_vs(t).get("bombs", 0))
 
 
-func _enter_tank(p, t) -> bool:
+## want: 0 = driver seat first, 1 = gunner seat first (the other one if that is taken).
+func _enter_tank(p, t, want := 0) -> bool:
 	if _flag_of(p) >= 0:
 		return false   # flag carriers stay on foot
 	if _is_plane(t) and t.z > 0.3:
 		return false   # can't board a flying plane
-	if t.driver == null:
+	if want == 1 and t.gunner == null:
+		t.gunner = p
+		p.seat = 1
+	elif t.driver == null:
 		t.driver = p
 		p.seat = 0
 	elif t.gunner == null:
@@ -2209,9 +2248,7 @@ func _player_in_tank(p, inp: Array, use_pressed: bool, seat_pressed: bool, epoch
 	if use_pressed:
 		_exit_tank(p)
 		return
-	if seat_pressed:
-		_switch_seat(p)
-		return
+	# no seat swapping inside: get out and climb back in ([use] = drive, [seat] = gun)
 	var role := _role(p)
 	if _is_plane(t):
 		_player_in_plane(p, t, role, inp, epoch_ok)
@@ -2256,14 +2293,18 @@ func _update_tank(t, dt: float) -> void:
 	t.cannon_cd -= dt
 	t.mg_cd -= dt
 	t.fire_t -= dt
-	if (t.driver == null and t.gunner == null) or over:
+	if t.driver == null or over:
+		# nobody at the wheel: no leftover throttle/steering from whoever just left the seat
 		t.drive = 0.0
 		t.steer = 0.0
+		t.pcmd = 0.0
 	if _is_plane(t):
 		_update_plane(t, dt)
 		return
 	var r: float = vs.r
-	t.hull = wrapf(t.hull + t.steer * float(vs.turn) * dt, -PI, PI)
+	# no turning on the spot: steering needs throttle, and reversing steers like a car
+	var roll: float = clampf(absf(t.drive) * 1.6, 0.0, 1.0) * (1.0 if t.drive >= 0.0 else -1.0)
+	t.hull = wrapf(t.hull + t.steer * float(vs.turn) * roll * dt, -PI, PI)
 	var spd: float = float(vs.speed) if t.drive > 0.0 else float(vs.rev)
 	var delta: Vector2 = Vector2.from_angle(t.hull) * t.drive * spd * dt
 	var np: Vector2 = map.move_circle(t.pos, delta, r)
@@ -3806,6 +3847,12 @@ func _bot_mode_goal(p) -> Dictionary:
 			if d < bd:
 				bd = d
 				goal = q.pos
+		# don't run straight at them: swing out to this bot's flank side while closing in
+		var away: Vector2 = goal - p.pos
+		if away.length() > 7.0 and p.bot != null:
+			var fg: Vector2 = goal + Vector2(-away.y, away.x).normalized() * float(p.bot.flank) * minf(7.0, away.length() * 0.35)
+			if fg.x > 2.0 and fg.y > 2.0 and fg.x < map.W - 2.0 and fg.y < map.H - 2.0 and not map.circle_blocked(fg, 0.3):
+				goal = fg
 		return {"goal": goal, "arrive": 2.0}
 	var mine: Dictionary = flags.get(p.team, {})
 	var defender: bool = p.slot % 2 == 1
@@ -3933,6 +3980,24 @@ func _bot_think(p, dt: float) -> Array:
 	b.err_t -= dt
 	b.path_t -= dt
 	b.strafe_t -= dt
+	b.pause_t -= dt
+	b.retreat_t -= dt
+	b.flank_t -= dt
+	if b.flank_t <= 0.0:
+		b.flank_t = rng.randf_range(5.0, 11.0)
+		b.flank = rng.randf_range(-1.0, 1.0)
+	# track the target's real velocity (strafing players don't move where they look)
+	if b.target != null and b.target.id == b.tlast_id:
+		var v: Vector2 = (b.target.pos - b.tlast) / maxf(dt, 0.001)
+		if v.length() < 15.0:
+			b.tvel = b.tvel.lerp(v, minf(1.0, dt * 8.0))
+	else:
+		b.tvel = Vector2.ZERO
+	if b.target != null:
+		b.tlast = b.target.pos
+		b.tlast_id = b.target.id
+	else:
+		b.tlast_id = -1
 	b.wcd -= dt
 	b.throw_cd -= dt
 	if b.err_t <= 0.0:
@@ -3957,7 +4022,7 @@ func _bot_think(p, dt: float) -> Array:
 		pitch = float(o.pitch)   # plane crews steer their own pitch
 	elif b.target != null and p.alive:
 		var d := maxf(0.5, p.pos.distance_to(b.target.pos))
-		pitch = atan2(_chest_z(b.target) - (_eye_z(p) - 0.04), d) + b.err * 0.4
+		pitch = atan2(_aim_z(b.target) - (_eye_z(p) - 0.04), d) + b.err * 0.4
 	return [o.mx, o.my, o.yaw, o.fire, o.alt, o.hold, b.use_c, b.seat_c, b.wreq, b.wseq, 0, p.epoch,
 		o.sprint, o.crouch, b.jump_c, b.throw_c, p.want[0], p.want[1], p.want[2], pitch, false, o.get("ax", 0.0), o.get("ay", 0.0)]
 
@@ -4015,7 +4080,7 @@ func _bot_tank(p, b, dt: float, o: Dictionary) -> void:
 		else:
 			var diff := angle_difference(t.hull, (gc - t.pos).angle())
 			o.mx = clampf(diff * 3.0, -1.0, 1.0)
-			o.my = 0.0
+			o.my = 0.35 if absf(diff) > 0.08 else 0.0   # creep to swing the nose (no pivoting on the spot)
 	if role == Defs.ROLE_SOLO or role == Defs.ROLE_GUNNER:
 		var aim_pt = null
 		var cannon := false
@@ -4069,8 +4134,12 @@ func _bot_drive(b, t, goal: Vector2, dt: float, o: Dictionary) -> void:
 		tgt = cc
 		break
 	var diff := angle_difference(t.hull, (tgt - t.pos).angle())
+	# vehicles can't pivot on the spot: turn while rolling, three-point turn when the goal is behind
 	o.mx = clampf(diff * 2.5, -1.0, 1.0)
-	o.my = 1.0 if absf(diff) < 0.45 else 0.15
+	o.my = 1.0 if absf(diff) < 0.45 else 0.6
+	if absf(diff) > 2.2 and t.pos.distance_to(tgt) < 6.0:
+		o.my = -0.7
+		o.mx = -1.0 if diff > 0.0 else 1.0
 	b.stuck_t += dt
 	if b.stuck_t > 1.2:
 		if t.pos.distance_to(b.stuck_pos) < 0.4 and b.reverse_t <= 0.0:
@@ -4081,7 +4150,7 @@ func _bot_drive(b, t, goal: Vector2, dt: float, o: Dictionary) -> void:
 	if b.reverse_t > 0.0:
 		b.reverse_t -= dt
 		o.my = -1.0
-		o.mx = 1.0 if diff > 0.0 else -1.0
+		o.mx = -1.0 if diff > 0.0 else 1.0   # reversing steers the other way round
 
 
 func _stolen_key_any(q, b: int) -> bool:
@@ -4244,6 +4313,11 @@ func _bot_foot(p, b, dt: float, o: Dictionary) -> void:
 		var away: Vector2 = p.pos - danger
 		goal = danger + (away.normalized() if away.length() > 0.1 else Vector2.RIGHT) * 4.5
 		arrive = 0.5
+	elif mode == Defs.MODE_WAR and t != null and _is_plane(t) and t.alive and t.z <= 0.0 and (t.driver == null or t.gunner == null):
+		# aircrew: go and board our plane
+		goal = t.pos
+		press_near = t.pos
+		arrive = 0.2
 	elif mode != Defs.MODE_HEIST:
 		var mg: Dictionary = _bot_mode_goal(p)
 		goal = mg.goal
@@ -4334,7 +4408,7 @@ func _bot_foot(p, b, dt: float, o: Dictionary) -> void:
 	b.taxi_cd -= dt
 	if press_near == Vector2.INF and b.taxi_cd <= 0.0 and not _in_arty(p.pos) and p.pos.distance_to(goal) > 30.0 and _flag_of(p) < 0:
 		for tv in tanks:
-			if tv.team == p.team and tv.alive and (tv.driver == null or tv.gunner == null) and not _human_in(tv) \
+			if tv.team == p.team and tv.alive and not _is_plane(tv) and (tv.driver == null or tv.gunner == null) and not _human_in(tv) \
 					and p.pos.distance_to(tv.pos) < 16.0 and tv.pos.distance_to(goal) < p.pos.distance_to(goal) + 8.0:
 				b.travel = goal
 				goal = tv.pos
@@ -4365,6 +4439,10 @@ func _bot_foot(p, b, dt: float, o: Dictionary) -> void:
 		break
 	var mv: Vector2 = tgt - p.pos
 	mv = mv.normalized() if mv.length() > 0.15 else Vector2.ZERO
+	if mode != Defs.MODE_HEIST and mv != Vector2.ZERO and p.pos.distance_to(goal) > 3.0:
+		# weave a little instead of running a perfectly straight, predictable line
+		var sw: float = sin(elapsed * 1.9 + float(p.id) * 1.7) * 0.45 + sin(elapsed * 0.7 + float(p.id)) * 0.25
+		mv = (mv + Vector2(-mv.y, mv.x) * sw).normalized()
 	if p.pos.distance_to(goal) < arrive:
 		mv = Vector2.ZERO
 	var want_w := 1
@@ -4378,14 +4456,42 @@ func _bot_foot(p, b, dt: float, o: Dictionary) -> void:
 		aim_pt = b.target.pos
 		if td < 1.3:
 			want_w = 3
-		if td < 9.0:
+		var to: Vector2 = (b.target.pos - p.pos).normalized()
+		var side: Vector2 = Vector2(-to.y, to.x) * b.strafe
+		# full duel footwork only where fighting IS the objective; carriers of flags / loot / keys keep running
+		var duel: bool = (mode == Defs.MODE_TDM or mode == Defs.MODE_WAR) and _flag_of(p) < 0
+		var carrying: bool = _flag_of(p) >= 0 or p.carried > 0 or _stolen_key(p) != -99999
+		if not duel and not carrying and td < 9.0:
 			if b.strafe_t <= 0.0:
-				b.strafe_t = rng.randf_range(0.6, 1.5)
+				b.strafe_t = rng.randf_range(0.4, 1.2)
 				b.strafe = -b.strafe
-			var to: Vector2 = (b.target.pos - p.pos).normalized()
-			mv = (mv * 0.4 + Vector2(-to.y, to.x) * b.strafe * 0.8).limit_length(1.0)
+			mv = (mv * 0.45 + side * 0.75).limit_length(1.0)
+		elif duel and td < 16.0:
+			# duel movement: irregular left/right strafes, short stops to aim, the odd jump,
+			# keep a fighting distance (back off when too close, push when far)
+			if b.strafe_t <= 0.0:
+				b.strafe_t = rng.randf_range(0.25, 1.1)
+				if rng.randf() < 0.75:
+					b.strafe = -b.strafe
+				b.pause_t = rng.randf_range(0.25, 0.7) if rng.randf() < 0.2 else 0.0
+				if rng.randf() < 0.1 and td > 3.0 and difficulty > 0:
+					b.jump_c += 1
+			var radial := 0.0
+			if td < 4.5:
+				radial = -0.6
+			elif td > 11.0:
+				radial = 0.45
+			var push: float = 0.6 if mode == Defs.MODE_WAR else 0.25   # WAR: keep advancing on the objective
+			if b.pause_t > 0.0:
+				mv = Vector2.ZERO if mode != Defs.MODE_WAR else mv * 0.3
+			else:
+				mv = (mv * push + side * 0.85 + to * radial).limit_length(1.0)
 		elif td > 12.0 and rng.randf() < 0.02:
 			o.crouch = true
+		if p.hp < 35.0 and b.retreat_t <= -4.0 and rng.randf() < 0.03:
+			b.retreat_t = rng.randf_range(1.2, 2.5)
+		if b.retreat_t > 0.0 and duel:
+			mv = (-to * 0.85 + side * 0.5).limit_length(1.0)
 		if p.eqn > 0 and b.throw_cd <= 0.0 and td > 4.0 and td < 11.0 and p.equip == Defs.EQ_FRAG and rng.randf() < 0.01:
 			b.throw_c += 1
 			b.throw_cd = 6.0
@@ -4394,9 +4500,10 @@ func _bot_foot(p, b, dt: float, o: Dictionary) -> void:
 			b.throw_cd = 3.0
 	if aim_pt != null:
 		var lead := Vector2.ZERO
-		if b.target != null and b.target.ttype == 1 and b.target.moving:
+		if b.target != null:
+			# lead by the target's measured velocity (bullet travel time)
 			var bv: float = maxf(20.0, float(Defs.WPN[p.weapon].vel))
-			lead = Vector2.from_angle(b.target.yaw) * 3.3 * (b.target.pos.distance_to(p.pos) / bv) * 0.5
+			lead = b.tvel * (b.target.pos.distance_to(p.pos) / bv) * [0.5, 0.75, 0.95][difficulty]
 		var desired: float = (aim_pt + lead - p.pos).angle() + b.err
 		o.yaw = rotate_toward(p.yaw, desired, 7.0 * dt)
 		if absf(angle_difference(o.yaw, desired)) < 0.1 and b.react_t <= 0.0:

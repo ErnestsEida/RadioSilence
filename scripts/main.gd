@@ -20,9 +20,9 @@ const TIME_OPTIONS := [6, 10, 15, 20]
 const SCORE_OPTIONS := [1500, 2500, 4000, 999999]
 
 const CONTROLS := """KEYBOARD+MOUSE: WASD move/drive  Mouse aim  LMB fire  RMB aim down sights (tank: MG)  SHIFT sprint  C/CTRL crouch  SPACE jump
-   E use / enter tank / hold at terminals   G grenade/medkit   1 primary  2 secondary  3 knife (wheel)   R reload   F seat   TAB scores
-GAMEPAD (P2): L-stick move  R-stick aim  RT fire  LT aim  L3 sprint  B crouch  A jump  X use  LB gear  RB weapon  Y seat  D-pad up reload  Back scores
-NUMPAD (P2, no pad): arrows move/turn  , . strafe  Num0 fire  Num. aim  Num9 sprint  Num/ crouch  Num7 jump  NumEnter use  Num8 gear  Num1-3 weapon  Num- reload  Num+ seat"""
+   E use / drive a vehicle / hold at terminals   G grenade/medkit   1 primary  2 secondary  3 knife (wheel)   R reload   F man a vehicle gun   TAB scores
+GAMEPAD (P2): L-stick move  R-stick aim  RT fire  LT aim  L3 sprint  B crouch  A jump  X use  LB gear  RB weapon  Y man a gun  D-pad up reload  Back scores
+NUMPAD (P2, no pad): arrows move/turn  , . strafe  Num0 fire  Num. aim  Num9 sprint  Num/ crouch  Num7 jump  NumEnter use  Num8 gear  Num1-3 weapon  Num- reload  Num+ man a gun"""
 
 
 class LocalP:
@@ -111,6 +111,9 @@ var time_pick: OptionButton
 var score_pick: OptionButton
 var lobby_list: Label
 var lobby_name: LineEdit
+var lobby_time: OptionButton
+var lobby_score: OptionButton
+var lobby_diff: OptionButton
 var ev_hold := PackedFloat32Array()   # host: events of WAR frames whose snapshot wasn't sent
 var ui_key := ""
 var lobby_info: Label
@@ -415,6 +418,26 @@ func _build_ui() -> void:
 	lobby_teams.add_item("Teams: 2")
 	lobby_teams.item_selected.connect(func(_i): _push_lobby_cfg())
 	lmm.add_child(lobby_teams)
+	# match length, score limit and AI difficulty for the LAN game (host decides)
+	lobby_time = OptionButton.new()
+	for tm in TIME_OPTIONS:
+		lobby_time.add_item("%d minutes" % tm)
+	lobby_time.select(1)
+	lobby_time.item_selected.connect(func(_i): _push_lobby_cfg())
+	lmm.add_child(lobby_time)
+	lobby_score = OptionButton.new()
+	for k in Defs.MODE_SCORES[0].size():
+		lobby_score.add_item("-")
+	lobby_score.select(1)
+	lobby_score.item_selected.connect(func(_i): _push_lobby_cfg())
+	lmm.add_child(lobby_score)
+	lobby_diff = OptionButton.new()
+	for nm in Defs.DIFFICULTY_NAMES:
+		lobby_diff.add_item("AI: %s" % nm)
+	lobby_diff.select(Settings.difficulty)
+	lobby_diff.item_selected.connect(func(_i): _push_lobby_cfg())
+	lmm.add_child(lobby_diff)
+	_score_texts(lobby_score, 0)
 	var nrow := _row(lv)
 	_label(nrow, "Your name:", 18)
 	lobby_name = LineEdit.new()
@@ -899,8 +922,9 @@ func _add_bots(roster: Array, team: int, count: int) -> void:
 func _match_cfg(roster: Array, map_i: int, team_size := 2, game_mode := 0, n_teams := 4) -> Dictionary:
 	var gm := clampi(game_mode, 0, Defs.MODE_NAMES.size() - 1)
 	var scores: Array = Defs.MODE_SCORES[gm]
-	return _with_atmos(map_i, {"seed": MAP_SEED, "map": map_i, "roster": roster, "difficulty": Settings.difficulty, "team_size": team_size,
-		"time": float(TIME_OPTIONS[time_pick.selected]) * 60.0, "score": int(scores[score_pick.selected]),
+	return _with_atmos(map_i, {"seed": MAP_SEED, "map": map_i, "roster": roster, "difficulty": lobby_diff.selected if Net.online else Settings.difficulty, "team_size": team_size,
+		"time": float(TIME_OPTIONS[lobby_time.selected if Net.online else time_pick.selected]) * 60.0,
+		"score": int(scores[lobby_score.selected if Net.online else score_pick.selected]),
 		"mode": gm, "teams": 2 if n_teams == 2 else 4})
 
 
@@ -942,6 +966,14 @@ func _tod_picker(parent: Node) -> OptionButton:
 
 
 ## Game mode changed in the menu: relabel the score limits (points / captures / kills).
+## Score-limit picker texts for a game mode ("first to 150 pts" ...).
+func _score_texts(ob: OptionButton, gm: int) -> void:
+	var scores: Array = Defs.MODE_SCORES[clampi(gm, 0, Defs.MODE_SCORES.size() - 1)]
+	for k in mini(scores.size(), ob.item_count):
+		var sc: int = scores[k]
+		ob.set_item_text(k, "no score limit" if sc > 99999 else "first to %d %s" % [sc, Defs.MODE_UNITS[gm]])
+
+
 func _on_mode_picked(i: int) -> void:
 	if score_pick == null:
 		return
@@ -1006,6 +1038,10 @@ func _push_lobby_cfg() -> void:
 		if lobby_mode.selected == Defs.MODE_WAR:
 			Net.lobby_cfg["teams"] = 2
 			Net.lobby_cfg["size"] = 16
+		Net.lobby_cfg["time"] = lobby_time.selected
+		Net.lobby_cfg["score"] = lobby_score.selected
+		Net.lobby_cfg["diff"] = lobby_diff.selected
+		_score_texts(lobby_score, lobby_mode.selected)
 		Net.fit_teams()   # players on teams that no longer play move to an active one
 		Net.sync_lobby.rpc(Net.players, Net.lobby_cfg)
 
@@ -1038,6 +1074,14 @@ func _on_lobby_changed() -> void:
 	lobby_tod.disabled = not host
 	lobby_mode.disabled = not host
 	lobby_teams.disabled = not host
+	lobby_time.disabled = not host
+	lobby_score.disabled = not host
+	lobby_diff.disabled = not host
+	_score_texts(lobby_score, int(Net.lobby_cfg.get("mode", 0)))
+	if not host:
+		lobby_time.select(clampi(int(Net.lobby_cfg.get("time", 1)), 0, lobby_time.item_count - 1))
+		lobby_score.select(clampi(int(Net.lobby_cfg.get("score", 1)), 0, lobby_score.item_count - 1))
+		lobby_diff.select(clampi(int(Net.lobby_cfg.get("diff", 1)), 0, lobby_diff.item_count - 1))
 	var war_lobby: bool = int(Net.lobby_cfg.get("mode", 0)) == Defs.MODE_WAR
 	if war_lobby:
 		lobby_size.disabled = true

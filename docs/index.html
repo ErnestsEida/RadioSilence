@@ -241,7 +241,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space
 			</a>
 			<a class="btn ghost" href="#screens">See it in action</a>
 		</div>
-		<div class="meta">Version 1.3 &middot; Solo, split-screen co-op &amp; LAN up to 32 players &middot; No install needed</div>
+		<div class="meta">Version 1.4 &middot; Solo, split-screen co-op &amp; LAN up to 32 players &middot; No install needed</div>
 	</div>
 </header>
 
@@ -368,7 +368,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space
 				<tr><td><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd></td><td>Primary, sidearm, knife (or mouse wheel)</td></tr>
 				<tr><td><kbd>G</kbd></td><td>Grenade, smoke or medkit</td></tr>
 				<tr><td><kbd>E</kbd></td><td>Use: vehicles, key doors, puzzle terminals, mortar</td></tr>
-				<tr><td><kbd>F</kbd></td><td>Switch vehicle seat</td></tr>
+				<tr><td><kbd>F</kbd></td><td>Man a vehicle gun (to change seats, get out with E and climb back in)</td></tr>
 				<tr><td><kbd>Tab</kbd> / <kbd>Esc</kbd></td><td>Scoreboard / pause &amp; options</td></tr>
 			</table>
 			<div class="panel">
@@ -398,7 +398,21 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space
 <div class="changelog">
 
 <div class="release latest">
-<div class="rel-head"><b>v1.3</b><span>2026-11-27</span><em>LATEST</em></div>
+<div class="rel-head"><b>v1.4</b><span>2026-11-28</span><em>LATEST</em></div>
+<ul>
+<li><b>Smarter AI:</b> bots no longer run in straight lines - they weave, flank you from the side, strafe irregularly, stop to aim, jump, back off when hurt and keep a fighting distance in Deathmatch and War.</li>
+<li><b>AI aim:</b> bots lead shots by how you actually move (not where you look) and aim where both a standing and a crouching body get hit - crouch-spamming no longer makes them miss.</li>
+<li><b>Vehicles:</b> no more turning on the spot - land vehicles steer only while moving (reversing steers like a car). AI drivers do three-point turns.</li>
+<li><b>Seats:</b> no seat swapping inside a vehicle. <kbd>E</kbd> drives, <kbd>F</kbd> mans the gun; to change seats, get out and climb back in.</li>
+<li>Fixed: a vehicle kept the last throttle/steering after its driver left the seat.</li>
+<li>Fixed: the loadout picked in the menu/lobby was ignored on the first spawn (you can now also change your kit right after respawning, until you fire).</li>
+<li><b>LAN lobby:</b> the host now sets match length, score limit and AI difficulty.</li>
+<li>WAR: AI aircrews now reliably crew the planes in big teams; small teams keep everyone on the ground.</li>
+</ul>
+</div>
+
+<div class="release">
+<div class="rel-head"><b>v1.3</b><span>2026-11-27</span></div>
 <ul>
 <li><b>New mode: WAR SIMULATOR</b> - always 2 teams of 16 (AI fills empty slots). Capture and hold points A, B and C: every held point scores, holding all three for 60 s wins outright. Respawn at the safest point your team holds.</li>
 <li><b>Planes:</b> fighter-bomber, heavy bomber and dive bomber with a pilot seat (W/S throttle, the mouse is the control stick: steer + climb/dive) and a bomber seat with a bombsight. Take off from the airfield next to your camp, don't stall, don't bail out. AI aircrews fly and bomb too.</li>

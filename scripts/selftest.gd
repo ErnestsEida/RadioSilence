@@ -462,6 +462,10 @@ static func run() -> int:
 		_test_mortars()
 		print("RESULT: %s (%d failures)" % ["PASS" if fails == 0 else "FAIL", fails])
 		return 0 if fails == 0 else 1
+	if OS.get_cmdline_user_args().has("--u4"):
+		_test_update4()
+		print("RESULT: %s (%d failures)" % ["PASS" if fails == 0 else "FAIL", fails])
+		return 0 if fails == 0 else 1
 	if OS.get_cmdline_user_args().has("--planes"):
 		_test_planes()
 		print("RESULT: %s (%d failures)" % ["PASS" if fails == 0 else "FAIL", fails])
@@ -670,6 +674,7 @@ static func run() -> int:
 	_test_items()
 	_test_war()
 	_test_planes()
+	_test_update4()
 
 	print("== movement and bullets")
 	var m4 = MapData.new()
@@ -1228,3 +1233,94 @@ static func _test_planes() -> void:
 	for i in int(22.0 / DT):
 		w.step(DT)
 	_check(down and pt.alive and pt.z == 0.0 and pt.bombs > 0, "crashed planes return to the airfield after %.0f s, rearmed" % w.WAR_RESPAWN)
+
+
+static func _test_update4() -> void:
+	print("== update 4: loadout at spawn, seats, vehicle turning, AI duel")
+	var m = MapData.new()
+	m.generate(0, SEED, 2, false)
+	var w = World.new(m, [{"pid": 1, "peer": 1, "name": "A", "team": 0}, {"pid": 2, "peer": 1, "name": "B", "team": 0}], SEED, 1, 900.0, 40, Defs.MODE_TDM)
+	_quiet(w)
+	var a = w.players[1]
+	var b = w.players[2]
+	w._exit_tank(a)
+	w._exit_tank(b)
+	# loadout picked in the menu arrives with the first inputs: applies at once while still at the spawn
+	w.set_input(1, _inp(a, {}))
+	a.want = [Defs.W_RIFLE, Defs.W_PISTOL, 0]
+	var inp: Array = _inp(a)
+	inp[16] = Defs.W_SNIPER
+	w.set_input(1, inp)
+	w.step(DT)
+	_check(a.primary == Defs.W_SNIPER and a.weapon == Defs.W_SNIPER, "loadout chosen before the first spawn applies immediately (primary %s)" % Defs.WPN[a.primary].name)
+	# seats: [seat] on foot boards as gunner, no swapping inside
+	var t = w.tanks[0]
+	for o in w.tanks:
+		if o.team == 0 and not w._is_plane(o):
+			t = o
+			break
+	a.pos = t.pos + Vector2(1.0, 0)
+	_steps(w, 2, 1, {"usec": a.use_count + 1})
+	b.pos = t.pos + Vector2(-1.0, 0)
+	w.set_input(2, _inp(b, {}))
+	var ib: Array = _inp(b)
+	ib[7] = b.seat_count + 1
+	w.set_input(2, ib)
+	w.step(DT)
+	_check(t.driver == a and t.gunner == b, "E boards as driver, F boards as gunner")
+	var ia: Array = _inp(a, {"my": 1.0})
+	ia[7] = a.seat_count + 1
+	w.set_input(1, ia)
+	w.step(DT)
+	_check(t.driver == a and a.seat == 0, "no seat swapping inside a vehicle")
+	# no pivot turning
+	var h0: float = t.hull
+	_steps(w, 60, 1, {"mx": 1.0, "my": 0.0})
+	_check(absf(angle_difference(h0, t.hull)) < 0.01, "vehicles can't turn on the spot")
+	_steps(w, 60, 1, {"mx": 1.0, "my": 1.0})
+	_check(absf(angle_difference(h0, t.hull)) > 0.3, "vehicles turn while driving")
+	# the driver gets out with the throttle held: the vehicle stops
+	_steps(w, 2, 1, {"my": 1.0, "usec": a.use_count + 1})
+	var p0: Vector2 = t.pos
+	_steps(w, 60, 2)
+	_check(t.driver == null and t.pos.distance_to(p0) < 0.05, "no leftover throttle once the driver is out")
+	# AI duel: one bot vs a strafing, crouch-spamming human at mid range
+	var m2 = MapData.new()
+	m2.generate(0, SEED, 2, false)
+	var w2 = World.new(m2, [{"pid": 1, "peer": 1, "name": "H", "team": 0}, {"pid": 100, "peer": 0, "name": "Opus", "team": 1, "bot": true}], SEED, 1, 900.0, 40, Defs.MODE_TDM)
+	_quiet(w2)
+	var h = w2.players[1]
+	var bot = w2.players[100]
+	w2._exit_tank(h)
+	w2._exit_tank(bot)
+	var spot: Vector2 = w2._open_spot(Vector2(m2.W * 0.5, m2.H * 0.5))
+	h.pos = spot
+	bot.pos = spot + Vector2(9.0, 0.0)
+	var dmg := 0.0
+	var hp_prev: float = h.hp
+	var moved := 0.0
+	var bpos: Vector2 = bot.pos
+	var turns := 0
+	var last_dir := Vector2.ZERO
+	for i in int(12.0 / DT):
+		var cr: bool = (i / 12) % 2 == 0
+		var sx: float = 1.0 if (i / 50) % 2 == 0 else -1.0
+		w2.set_input(1, _inp(h, {"crouch": cr, "mx": sx}))
+		w2.step(DT)
+		if h.alive and h.hp < hp_prev:
+			dmg += hp_prev - h.hp
+		if not h.alive:
+			dmg += hp_prev
+			w2._respawn(h)
+			h.pos = spot
+		hp_prev = h.hp
+		var d: Vector2 = bot.pos - bpos
+		if d.length() > 0.001:
+			if last_dir != Vector2.ZERO and d.normalized().dot(last_dir) < 0.5:
+				turns += 1
+			last_dir = d.normalized()
+		moved += d.length()
+		bpos = bot.pos
+	print("  bot dealt %.0f damage in 12 s to a crouch-spamming strafer; %d direction changes" % [dmg, turns])
+	_check(dmg >= 150.0, "bots still hit a crouch-spamming, strafing target (%.0f dmg in 12 s)" % dmg)
+	_check(turns >= 8, "bots move unpredictably in a duel (%d direction changes in 12 s)" % turns)
